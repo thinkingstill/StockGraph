@@ -72,6 +72,13 @@
 
 - `outputs/`
 
+补充说明：
+
+- `outputs/` 仍然是**运行时生成目录**，平时不需要提交 HTML / JSON 产物。
+- 如果启用了 GitHub Pages，也依然推荐保持这一策略。
+- 统一做法是：由 GitHub Actions 在 CI 中执行构建，再把 `outputs/` 作为 Pages artifact 发布。
+- 因此仓库里只需要保留目录占位文件（如 `.gitkeep`）以及构建脚本，不需要把生成结果纳入版本管理。
+
 ### 原始参考实现层（按需 push）
 
 - `source/`
@@ -137,6 +144,25 @@
   - `data/market_overview/*.json`
   - `outputs/**`
   - `*.log`
+
+## 7. GitHub Actions / Pages 场景下的额外建议
+
+如果仓库已经同步到 GitHub，并准备启用自动运行与 GitHub Pages，推荐额外提交这些内容：
+
+- `.github/workflows/pages.yml`
+- `scripts/build_pages_site.py`
+- `data/shared_state/.gitkeep`
+- `outputs/.gitkeep`
+- `outputs/app/.gitkeep`
+- `outputs/app/data/.gitkeep`
+- `outputs/html/.gitkeep`
+- `outputs/market/.gitkeep`
+
+这样做的目的：
+
+- 让空目录结构在新 clone 后仍然存在
+- 让 CI / Pages 有稳定的输出目录约定
+- 保持“源码入库、生成物不入库”的仓库边界清晰
 
 如果你后续希望仓库更“开源友好”，下一步建议再补一个：
 

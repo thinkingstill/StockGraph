@@ -3,18 +3,27 @@ set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 VENV_DIR="${VENV_DIR:-$ROOT_DIR/.venv}"
-PYTHON_BIN="$VENV_DIR/bin/python"
+DEFAULT_PYTHON_BIN="$VENV_DIR/bin/python"
+PYTHON_BIN="${PYTHON_BIN:-$DEFAULT_PYTHON_BIN}"
 TARGET_DATE="${TARGET_DATE:-}"
 SYNC_NEWS="${SYNC_NEWS:-0}"
 BUILD_GRAPHS="${BUILD_GRAPHS:-0}"
 SYNC_MARKET_OVERVIEW="${SYNC_MARKET_OVERVIEW:-1}"
 MARKET_OVERVIEW_YEAR="${MARKET_OVERVIEW_YEAR:-}"
 
-if [[ ! -x "$PYTHON_BIN" ]]; then
+if [[ "$PYTHON_BIN" == */* ]]; then
+  RESOLVED_PYTHON_BIN="$PYTHON_BIN"
+else
+  RESOLVED_PYTHON_BIN="$(command -v "$PYTHON_BIN" || true)"
+fi
+
+if [[ -z "$RESOLVED_PYTHON_BIN" || ! -x "$RESOLVED_PYTHON_BIN" ]]; then
   echo "[stockgraph] error: virtualenv python not found at $PYTHON_BIN" >&2
-  echo "[stockgraph] run ./deploy_python_env.sh first" >&2
+  echo "[stockgraph] run ./deploy_python_env.sh first, or set PYTHON_BIN to a valid python executable" >&2
   exit 1
 fi
+
+PYTHON_BIN="$RESOLVED_PYTHON_BIN"
 
 cd "$ROOT_DIR"
 
@@ -76,6 +85,7 @@ if [[ "$SYNC_MARKET_OVERVIEW" == "1" ]]; then
 fi
 
 run_task "build_unified_app" "$PYTHON_BIN" scripts/build_unified_app.py || true
+run_task "build_dev_index" "$PYTHON_BIN" scripts/build_dev_index.py || true
 
 if [[ "${#TASK_FAILURES[@]}" -gt 0 ]]; then
   echo "[stockgraph] completed with warnings. failed tasks: ${TASK_FAILURES[*]}" >&2

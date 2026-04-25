@@ -110,8 +110,8 @@ def main() -> int:
 </head>
 <body>
   <div class="wrap">
-    <h1>StockGraph 开发入口</h1>
-    <p>本页聚合当前开发环境可直接查看的页面，包括龙虎榜查询、关系网络和市场热度可视化。</p>
+    <h1>StockGraph 页面入口</h1>
+    <p>本页聚合当前可直接访问的页面，可同时用于本地预览和 GitHub Pages 发布后的统一入口。</p>
     <div class="grid">
       {"".join(f'<a class="card" href="{href}" target="_blank" rel="noreferrer"><div class="badge">Page</div><div class="title">{title}</div><div class="path">{href}</div></a>' for title, href in pages)}
     </div>

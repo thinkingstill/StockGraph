@@ -180,7 +180,7 @@ def render_unified_app() -> str:
         <p>统一入口，按 tab 查看龙虎榜查询、关系网络、市场热度和行业强弱。每个 tab 独立取数，互不阻塞。</p>
       </div>
       <div class="status">
-        <div>入口: <strong>/outputs/app/index.html</strong></div>
+        <div>页面: <strong>app/index.html</strong></div>
         <div id="manifestStatus" style="margin-top:8px;">正在加载数据清单...</div>
       </div>
     </div>

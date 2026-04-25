@@ -3,17 +3,26 @@ set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 VENV_DIR="${VENV_DIR:-$ROOT_DIR/.venv}"
-PYTHON_BIN="$VENV_DIR/bin/python"
+DEFAULT_PYTHON_BIN="$VENV_DIR/bin/python"
+PYTHON_BIN="${PYTHON_BIN:-$DEFAULT_PYTHON_BIN}"
 HOST="${HOST:-127.0.0.1}"
 PORT="${PORT:-8030}"
 SYNC_MARKET_OVERVIEW="${SYNC_MARKET_OVERVIEW:-1}"
 SYNC_DRAGON_TIGER="${SYNC_DRAGON_TIGER:-0}"
 
-if [[ ! -x "$PYTHON_BIN" ]]; then
+if [[ "$PYTHON_BIN" == */* ]]; then
+  RESOLVED_PYTHON_BIN="$PYTHON_BIN"
+else
+  RESOLVED_PYTHON_BIN="$(command -v "$PYTHON_BIN" || true)"
+fi
+
+if [[ -z "$RESOLVED_PYTHON_BIN" || ! -x "$RESOLVED_PYTHON_BIN" ]]; then
   echo "[stockgraph] error: virtualenv python not found at $PYTHON_BIN" >&2
-  echo "[stockgraph] run ./deploy_python_env.sh first" >&2
+  echo "[stockgraph] run ./deploy_python_env.sh first, or set PYTHON_BIN to a valid python executable" >&2
   exit 1
 fi
+
+PYTHON_BIN="$RESOLVED_PYTHON_BIN"
 
 cd "$ROOT_DIR"
 

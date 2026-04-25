@@ -315,6 +315,80 @@ cron 示例：
 0 9 * * 1-5 cd /home/wlh/StockGraph && /bin/bash /home/wlh/StockGraph/run_daily_sync.sh >> /var/log/stockgraph.log 2>&1
 ```
 
+## GitHub Actions 自动运行
+
+仓库已预留 GitHub Actions 工作流：
+
+- `.github/workflows/pages.yml`
+
+它会在以下场景触发：
+
+- push 到 `main`
+- GitHub Actions 页面手动触发 `workflow_dispatch`
+- 工作日 09:00 UTC 定时执行（对应北京时间 17:00，若需改成别的时段可直接调整 cron）
+
+工作流的执行逻辑是：
+
+1. 安装 Python 依赖：`python -m pip install -e .`
+2. 运行 `bash run_daily_sync.sh`
+3. 运行 `python scripts/build_pages_site.py`
+4. 将 `outputs/` 上传为 GitHub Pages artifact
+5. 发布到 GitHub Pages
+
+手动触发时可选输入：
+
+- `target_date`
+  - 指定同步日期，例如 `2026-04-17`
+- `market_overview_year`
+  - 额外生成年度行业强弱榜单，例如 `2025`
+- `sync_news`
+  - 是否同时执行新闻同步
+- `build_graphs`
+  - 是否同时执行图快照构建
+
+为了兼容 CI，`run_daily_sync.sh` 和 `dev_start.sh` 现在都支持通过 `PYTHON_BIN` 指定解释器；在 GitHub Actions 中默认使用：
+
+```bash
+PYTHON_BIN=python
+```
+
+## GitHub Pages 发布方式
+
+当前 Pages 采用“**CI 构建产物 + artifact 部署**”模式，而不是把 `outputs/` 里的 HTML / JSON 直接提交进仓库。
+
+这意味着：
+
+- 仓库里保留源码、脚本、配置和文档
+- `outputs/` 仍然作为运行时生成目录被 `.gitignore` 忽略
+- GitHub Actions 每次执行时重新构建 `outputs/`
+- Pages 实际发布的内容来自 CI 上传的 artifact
+
+当前页面入口约定：
+
+- Pages 根入口：`outputs/index.html`
+- 主功能页：`outputs/app/index.html`
+
+其中：
+
+- `scripts/build_dev_index.py` 负责生成 `outputs/index.html`
+- `scripts/build_pages_site.py` 负责补齐 Pages 发布所需文件，例如 `.nojekyll`
+
+### 首次启用 GitHub Pages 的仓库设置建议
+
+在 GitHub 仓库页面中建议确认以下配置：
+
+1. `Settings -> Pages`
+   - Source 选择 **GitHub Actions**
+2. `Settings -> Actions -> General`
+   - 确认允许工作流运行
+3. 若仓库是私有仓库
+   - 需要确认当前账号方案支持 GitHub Pages
+
+首次工作流跑完后，GitHub 会给出一个 Pages 地址。后续访问方式通常是：
+
+- 仓库首页 Pages 根地址：对应 `outputs/index.html`
+- 统一应用页面：`<pages-base-url>/app/index.html`
+
 ## 后续扩展建议
 
 - `domain/news` + `infrastructure/data_sources/news`：资讯抓取、清洗、事件抽取
