@@ -1,0 +1,37 @@
+__pycache__/
+.pytest_cache/
+.venv/
+*.pyc
+
+# build / packaging
+*.egg-info/
+dist/
+build/
+
+# OS / editor
+.DS_Store
+
+# local logs
+*.log
+
+data/shared_state/*.db
+source/*.db
+
+# runtime market cache / generated data
+data/market_overview/*.json
+
+# local runtime state
+data/shared_state/*
+!data/shared_state/.gitkeep
+
+# generated site outputs
+outputs/*.html
+outputs/html/*.html
+outputs/market/*.html
+outputs/app/data/*.json
+outputs/app/*.html
+!outputs/.gitkeep
+!outputs/app/.gitkeep
+!outputs/app/data/.gitkeep
+!outputs/html/.gitkeep
+!outputs/market/.gitkeep
