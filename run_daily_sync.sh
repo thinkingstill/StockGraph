@@ -9,6 +9,7 @@ TARGET_DATE="${TARGET_DATE:-}"
 SYNC_NEWS="${SYNC_NEWS:-0}"
 BUILD_GRAPHS="${BUILD_GRAPHS:-0}"
 SYNC_MARKET_OVERVIEW="${SYNC_MARKET_OVERVIEW:-1}"
+SYNC_DRAGON_TIGER="${SYNC_DRAGON_TIGER:-1}"
 MARKET_OVERVIEW_YEAR="${MARKET_OVERVIEW_YEAR:-}"
 
 if [[ "$PYTHON_BIN" == */* ]]; then
@@ -46,12 +47,16 @@ run_task() {
 echo "[stockgraph] initializing database schema"
 "$PYTHON_BIN" scripts/init_db.py
 
-if [[ -n "$TARGET_DATE" ]]; then
-  echo "[stockgraph] syncing dragon tiger for date: $TARGET_DATE"
-  run_task "sync_dragon_tiger" "$PYTHON_BIN" scripts/sync_dragon_tiger.py --date "$TARGET_DATE" || true
+if [[ "$SYNC_DRAGON_TIGER" == "1" ]]; then
+  if [[ -n "$TARGET_DATE" ]]; then
+    echo "[stockgraph] syncing dragon tiger for date: $TARGET_DATE"
+    run_task "sync_dragon_tiger" "$PYTHON_BIN" scripts/sync_dragon_tiger.py --date "$TARGET_DATE" || true
+  else
+    echo "[stockgraph] syncing dragon tiger for previous trading date"
+    run_task "sync_dragon_tiger" "$PYTHON_BIN" scripts/sync_dragon_tiger.py || true
+  fi
 else
-  echo "[stockgraph] syncing dragon tiger for previous trading date"
-  run_task "sync_dragon_tiger" "$PYTHON_BIN" scripts/sync_dragon_tiger.py || true
+  echo "[stockgraph] skipping dragon tiger sync"
 fi
 
 echo "[stockgraph] regenerating dashboards"
@@ -59,7 +64,14 @@ run_task "generate_dashboards" "$PYTHON_BIN" scripts/generate_dashboards.py || t
 
 if [[ "$SYNC_NEWS" == "1" ]]; then
   echo "[stockgraph] syncing news"
-  run_task "sync_news" "$PYTHON_BIN" scripts/sync_news.py --limit "${NEWS_LIMIT:-50}" || true
+  NEWS_ARGS=(--limit "${NEWS_LIMIT:-50}" --stock-limit "${NEWS_STOCK_LIMIT:-5}")
+  if [[ -n "${NEWS_STOCK_CODES:-}" ]]; then
+    NEWS_ARGS+=(--stock-codes "$NEWS_STOCK_CODES")
+  fi
+  if [[ "${SKIP_STOCK_NEWS:-0}" == "1" ]]; then
+    NEWS_ARGS+=(--skip-stock-news)
+  fi
+  run_task "sync_news" "$PYTHON_BIN" scripts/sync_news.py "${NEWS_ARGS[@]}" || true
 fi
 
 if [[ "$BUILD_GRAPHS" == "1" ]]; then

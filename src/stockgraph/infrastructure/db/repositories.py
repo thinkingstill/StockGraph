@@ -341,6 +341,151 @@ class NewsRepository:
             conn.commit()
         return inserted
 
+    def query_news_by_stock(self, stock_code: str, limit: int = 30) -> list[dict]:
+        """查询与指定股票相关的新闻，优先通过实体关联，其次通过 metadata 中的 stock_code。"""
+        with get_connection() as conn:
+            # 方式1: 通过 news_entities 关联
+            rows = conn.execute(
+                """
+                SELECT DISTINCT na.id, na.source, na.title, na.content, na.summary,
+                       na.published_at, na.url, na.sentiment, na.event_type, na.metadata_json
+                FROM news_articles na
+                INNER JOIN news_entities ne ON ne.article_id = na.id
+                WHERE ne.entity_code = ? AND ne.entity_type = 'stock'
+                ORDER BY na.published_at DESC
+                LIMIT ?
+                """,
+                (stock_code, limit),
+            ).fetchall()
+
+            # 方式2: 通过 metadata_json 中的 stock_code 字段补充
+            extra_rows = conn.execute(
+                """
+                SELECT id, source, title, content, summary, published_at, url, sentiment, event_type, metadata_json
+                FROM news_articles
+                WHERE metadata_json LIKE ?
+                ORDER BY published_at DESC
+                LIMIT ?
+                """,
+                (f'%"stock_code": "{stock_code}"%', limit),
+            ).fetchall()
+
+        # 合并去重
+        seen_ids: set[int] = set()
+        results: list[dict] = []
+        for row in rows:
+            rid = row["id"]
+            if rid not in seen_ids:
+                seen_ids.add(rid)
+                results.append(self._row_to_news_dict(row))
+        for row in extra_rows:
+            rid = row["id"]
+            if rid not in seen_ids:
+                seen_ids.add(rid)
+                results.append(self._row_to_news_dict(row))
+
+        # 按发布时间降序排序
+        results.sort(key=lambda x: x.get("published_at", ""), reverse=True)
+        return results[:limit]
+
+    def query_all_news(self, limit: int = 100) -> list[dict]:
+        """查询所有最新新闻。"""
+        with get_connection() as conn:
+            rows = conn.execute(
+                """
+                SELECT id, source, title, content, summary, published_at, url, sentiment, event_type, metadata_json
+                FROM news_articles
+                ORDER BY published_at DESC
+                LIMIT ?
+                """,
+                (limit,),
+            ).fetchall()
+        return [self._row_to_news_dict(row) for row in rows]
+
+    def list_stock_codes_with_news(self) -> list[str]:
+        """列出所有有新闻关联的股票代码。"""
+        with get_connection() as conn:
+            rows = conn.execute(
+                """
+                SELECT DISTINCT entity_code
+                FROM news_entities
+                WHERE entity_type = 'stock'
+                ORDER BY entity_code
+                """
+            ).fetchall()
+            codes_from_entities = {row["entity_code"] for row in rows}
+
+            # 也从 metadata 中提取
+            meta_rows = conn.execute(
+                """
+                SELECT DISTINCT metadata_json FROM news_articles
+                WHERE metadata_json LIKE '%"stock_code"%'
+                """
+            ).fetchall()
+        codes_from_meta: set[str] = set()
+        for row in meta_rows:
+            try:
+                meta = json.loads(row["metadata_json"])
+                code = meta.get("stock_code")
+                if code:
+                    codes_from_meta.add(str(code))
+            except Exception:
+                pass
+
+        all_codes = sorted(codes_from_entities | codes_from_meta)
+        return all_codes
+
+    def query_news_edges_by_date(self, trade_date: str, limit: int = 500) -> list[dict]:
+        """查询某天新闻与股票实体的关联，用于图谱边构建。"""
+        with get_connection() as conn:
+            rows = conn.execute(
+                """
+                SELECT DISTINCT na.id, na.source, na.title, na.published_at, na.url,
+                       na.sentiment, na.event_type, ne.entity_code, ne.entity_name
+                FROM news_articles na
+                INNER JOIN news_entities ne ON ne.article_id = na.id
+                WHERE ne.entity_type = 'stock' AND substr(na.published_at, 1, 10) = ?
+                ORDER BY na.published_at DESC
+                LIMIT ?
+                """,
+                (trade_date, limit),
+            ).fetchall()
+        return [
+            {
+                "id": row["id"],
+                "source": row["source"],
+                "title": row["title"],
+                "published_at": row["published_at"],
+                "url": row["url"],
+                "sentiment": row["sentiment"] or "中性",
+                "event_type": row["event_type"] or "其他",
+                "stock_code": row["entity_code"],
+                "stock_name": row["entity_name"],
+            }
+            for row in rows
+        ]
+
+    @staticmethod
+    def _row_to_news_dict(row) -> dict:
+        meta = {}
+        try:
+            meta = json.loads(row["metadata_json"]) if row["metadata_json"] else {}
+        except Exception:
+            pass
+        return {
+            "id": row["id"],
+            "source": row["source"],
+            "title": row["title"],
+            "content": row["content"],
+            "summary": row["summary"],
+            "published_at": row["published_at"],
+            "url": row["url"],
+            "sentiment": row["sentiment"],
+            "event_type": row["event_type"],
+            "stock_code": meta.get("stock_code", ""),
+            "original_source": meta.get("original_source", ""),
+        }
+
 
 class GraphRepository:
     def initialize_database(self) -> None:

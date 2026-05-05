@@ -11,7 +11,9 @@ StockGraph/
 ├── docs/
 │   └── architecture.md
 ├── outputs/
-│   └── html/                 # 生成的静态页面
+│   ├── app/                  # 统一前端产物（index.html + data/）
+│   ├── html/                 # 生成的静态页面
+│   └── market/               # 市场热度 HTML
 ├── scripts/                  # 根目录执行入口
 ├── source/                   # 原始参考实现，保留不动
 └── src/stockgraph/
@@ -20,6 +22,12 @@ StockGraph/
     ├── core/                 # 路径、日志、配置
     ├── domain/               # 领域模型与规则
     ├── infrastructure/       # 数据源、数据库、外部依赖
+    │   └── data_sources/news/
+    │       ├── akshare_source.py  # akshare 个股新闻 + 财联社快讯
+    │       ├── base.py            # 新闻源统一接口
+    │       ├── eastmoney.py       # 东方财富资讯（占位）
+    │       ├── cls.py             # 财联社（占位）
+    │       └── rss.py             # RSS/通用网页源（占位）
     └── presentation/         # HTML 模板与展示拼装
 ```
 
@@ -32,9 +40,14 @@ StockGraph/
 - 综合关系网络页面生成
 - 新闻领域模型、清洗/标签规则骨架
 - 新闻入库服务与新闻数据源占位接口
+- **akshare 个股新闻采集**：通过 `stock_news_em` 获取东方财富个股近期新闻，支持按股票代码批量拉取
+- **akshare 财联社快讯采集**：通过 `stock_news_main_cx` 获取财联社新闻快讯
+- **个股新闻 UI 展示**：统一前端新增「个股新闻」tab，支持股票卡片浏览、情绪筛选、新闻时间线详情
+- **🤖 AI 智能分析**：统一前端新增「AI 分析」tab，支持配置兼容 OpenAI 的 API（baseurl/key/model），选择股票后自动组装新闻+龙虎榜上下文，调用大模型进行流式分析
 - 图节点/边模型、二部图/投影图构建骨架
 - 图快照持久化与图分析 CLI 入口
 - 市场概览模块：全市场行情、雪球热度、行业强弱、3D 热度可视化
+- **全 A 股超大关系图谱**：基于 ECharts Graph 展示全市场股票节点，并按交易日叠加行业、交易所、涨跌状态、交易分层、龙虎榜席位、知名游资别名、新闻、事件、情绪等关系节点
 
 ## 当前状态
 
@@ -44,21 +57,49 @@ StockGraph/
   - `sync_dragon_tiger` 可抓取、入库、生成页面
 - 展示层可运行：
   - `generate_dashboards` 可生成查询页和综合分析页
-- 新闻链路已打通框架：
-  - 已有 `NewsArticle / NewsEntity / NewsLink`
+- 新闻链路已打通：
+  - 已有 `NewsArticle / NewsEntity / NewsLink` 领域模型
   - 已有标准化、去重 hash、基础情绪/事件类型标注
-  - 已有 `sync_news` 入口，但具体新闻源抓取逻辑仍是占位实现
+  - **已接入 akshare 个股新闻**：通过 `stock_news_em` 获取东方财富个股近期新闻
+  - **已接入 akshare 财联社快讯**：通过 `stock_news_main_cx` 获取全局新闻
+  - `sync_news` 支持全局新闻同步和按股票代码的个股新闻同步
+  - 新闻可通过实体关联（`news_entities`）和 metadata 双路径按股票代码查询
+  - 统一前端新增「个股新闻」tab，支持卡片浏览、情绪筛选、时间线详情
+- **AI 分析链路已打通**：
+  - 统一前端新增「🤖 AI 分析」tab
+  - 支持配置兼容 OpenAI 的 API（Base URL / API Key / 模型名称），配置保存到 localStorage
+  - 选择股票后自动组装新闻 + 龙虎榜上下文，调用大模型进行流式分析
+  - 后端 `_build_ai_analysis_data` 合并新闻和龙虎榜两个来源的股票，构建完整分析上下文
 - 图分析链路已打通框架：
   - 已能从现有龙虎榜数据构建 `seat-stock`、`seat-seat`、`stock-stock` 图快照
   - 已有 `build_graph_snapshots` 入口并支持写入数据库
+- **全 A 股图谱展示链路已打通**：
+  - 统一前端新增「全 A 图谱」tab
+  - 数据文件：`outputs/app/data/stock_super_graph.json`
+  - 股票全集复用 `data/market_overview/stock_daily_*.json`
+  - 热度属性复用 `data/market_overview/hot_daily_*.json`
+  - 龙虎榜席位边复用 `stock_seat_operations`
+  - 新闻边复用 `news_articles / news_entities`
+  - 支持按交易日切换，并支持行业、交易所、节点类型、关键词和核心节点规模筛选
 
 当前还没有完成的部分：
 
-- 东方财富资讯、财联社、RSS 的真实抓取与解析
+- 东方财富资讯、RSS 的真实抓取与解析（财联社已通过 akshare 接入）
 - 新闻标题/正文到股票、机构、概念的更准确映射
-- 新闻和龙虎榜的联动分析服务
+- 新闻和龙虎榜的后端联动分析服务
 - 图谱社区发现、路径挖掘、主题簇分析
-- 大模型分析服务与报告生成
+- 大模型分析服务的后端独立服务化（当前已通过前端直调 OpenAI 兼容 API 实现）
+- 全 A 图谱里的“概念/题材/基金/公告/股东”等节点还未接入，但现有 `node.category + attributes + relation_types` 结构已预留扩展空间
+
+## 功能完整度检查
+
+按当前 README 和代码状态看，项目已达到“可运行分析应用”阶段，不再是单纯工程骨架：
+
+- 数据采集完整度：龙虎榜、全市场行情、雪球热度、akshare 个股新闻/财联社快讯已可用；东方财富资讯、RSS 等多源新闻仍是占位或待增强。
+- 数据存储完整度：SQLite schema 覆盖龙虎榜、新闻实体、图节点边、市场概览；图谱快照和统一前端 JSON 已能落盘。
+- 可视化完整度：统一前端已有龙虎榜查询、龙虎榜关系网、市场热度、行业日历、行业强弱、全 A 图谱、个股新闻、AI 分析 8 个模块。
+- 图谱完整度：已有龙虎榜小图和全 A 多类型大图；社区发现、路径分析、主题簇和图摘要仍需继续实现。
+- AI 分析完整度：前端直调 OpenAI 兼容 API 已可用；后端服务化、结构化提示词契约和图谱摘要接入仍待扩展。
 
 ## 运行方式
 
@@ -68,6 +109,7 @@ PYTHONPATH=src python3 -m stockgraph.cli.init_db
 PYTHONPATH=src python3 -m stockgraph.cli.generate_dashboards
 PYTHONPATH=src python3 -m stockgraph.cli.sync_dragon_tiger --date 2026-04-17
 PYTHONPATH=src python3 -m stockgraph.cli.sync_news --limit 50
+PYTHONPATH=src python3 -m stockgraph.cli.sync_news --stock-codes "000001,600519" --stock-limit 10
 PYTHONPATH=src python3 -m stockgraph.cli.build_graph_snapshots --persist
 PYTHONPATH=src python3 -m stockgraph.cli.sync_market_overview --year 2025
 PYTHONPATH=src python3 -m stockgraph.cli.build_unified_app
@@ -80,10 +122,49 @@ python3 scripts/init_db.py
 python3 scripts/generate_dashboards.py
 python3 scripts/sync_dragon_tiger.py --date 2026-04-17
 python3 scripts/sync_news.py --limit 50
+python3 scripts/sync_news.py --stock-codes "000001,600519" --stock-limit 10
 python3 scripts/build_graph_snapshots.py --persist
 python3 scripts/sync_market_overview.py --year 2025
 python3 scripts/build_unified_app.py
 ```
+
+如果希望一次性生成所有数据和页面，直接运行：
+
+```bash
+cd /home/wlh/StockGraph
+bash run_full_sync.sh
+```
+
+`run_full_sync.sh` 默认会执行：
+
+- 初始化数据库 schema
+- 同步龙虎榜
+- 生成龙虎榜页面
+- 同步市场概览数据
+- 同步新闻
+- 构建图快照
+- 生成统一前端，包括「全 A 图谱」所需的 `stock_super_graph.json`
+- 生成开发首页
+
+市场数据不需要每次都“按年运行”。`sync_market_overview` 每次都会同步一个交易日的全市场行情和热度数据；`--year` 只是额外生成某一年的年度行业榜单。日常同步建议不传 `--year`，需要刷新年度行业榜单时再运行：
+
+```bash
+BUILD_YEARLY_MARKET=1 MARKET_OVERVIEW_YEAR=2026 bash run_full_sync.sh
+```
+
+常用开关：
+
+- `TARGET_DATE=2026-04-24` — 指定龙虎榜和市场概览同步日期
+- `NEWS_LIMIT=100` — 控制新闻同步数量
+- `SYNC_NEWS=0` — 跳过新闻同步，复用已有新闻数据
+- `BUILD_GRAPHS=0` — 跳过图快照构建，但仍会生成统一前端里的全 A 图谱 JSON
+- `BUILD_YEARLY_MARKET=1` — 额外生成年度行业榜单
+
+`sync_news` 新增参数：
+
+- `--stock-codes "000001,600519"` — 逗号分隔的股票代码列表，用于个股新闻采集。留空则自动从龙虎榜获取近期活跃股票
+- `--stock-limit 10` — 每个股票最多采集多少条新闻，默认 20
+- `--skip-stock-news` — 跳过个股新闻采集，仅同步全局新闻
 
 ## 统一前端入口
 
@@ -91,13 +172,16 @@ python3 scripts/build_unified_app.py
 
 - [outputs/app/index.html](/home/wlh/StockGraph/outputs/app/index.html)
 
-页面内按 tab 划分为 4 个模块：
+页面内按 tab 划分为 8 个模块：
 
 - 龙虎榜查询
 - 龙虎榜关系网
 - 热度图
+- **全 A 图谱**（ECharts Graph 超大关系图，按交易日展示股票、行业、交易所、席位、新闻、交易状态等多类型节点）
 - 行业日历
 - 行业强弱
+- **个股新闻**（基于 akshare 采集的东方财富个股新闻，支持股票卡片浏览、情绪筛选、新闻时间线详情）
+- **🤖 AI 分析**（配置兼容 OpenAI 的 API，选择股票后自动组装上下文进行流式分析）
 
 其中“热度图”已经补成接近原 `stock-se stock_daily.html` 的完整交互版，支持：
 
@@ -117,8 +201,11 @@ python3 scripts/build_unified_app.py
   - `outputs/app/data/dragon_tiger_query.json`
   - `outputs/app/data/dragon_tiger_graph.json`
 - `outputs/app/data/market_hot.json`
+- `outputs/app/data/stock_super_graph.json`
 - `outputs/app/data/market_calendar.json`
 - `outputs/app/data/market_industry.json`
+- `outputs/app/data/stock_news.json`
+- `outputs/app/data/ai_analysis.json`
 
 设计原则：
 
@@ -302,6 +389,16 @@ bash run_daily_sync.sh
   - 同步市场概览时额外生成某一年的行业强弱榜单
 - `NEWS_LIMIT=100`
   - 控制新闻同步条数
+- `NEWS_STOCK_LIMIT=5`
+  - 控制每只股票最多采集多少条个股新闻，默认较保守，避免对同一站点连续请求过多
+- `SYNC_DRAGON_TIGER=0`
+  - 跳过龙虎榜远端同步，只初始化数据库并复用已有数据生成页面
+- `STOCKGRAPH_HOT_MAX_WORKERS=1`
+  - 控制雪球热度抓取并发数，默认 1
+- `STOCKGRAPH_HISTORY_MAX_WORKERS=2`
+  - 控制年度历史行情抓取并发数，默认 2
+- `STOCKGRAPH_REQUEST_DELAY_SECONDS=0.8`
+  - 控制 akshare 相关连续请求之间的礼貌延迟
 
 cron 示例：
 
@@ -321,19 +418,33 @@ cron 示例：
 
 - `.github/workflows/pages.yml`
 
-它会在以下场景触发：
+它会在以下场景触发，但不同触发方式的行为不同：
 
 - push 到 `main`
 - GitHub Actions 页面手动触发 `workflow_dispatch`
-- 工作日 09:00 UTC 定时执行（对应北京时间 17:00，若需改成别的时段可直接调整 cron）
+- 工作日 10:00 UTC 定时执行（对应北京时间 18:00，尽量避开盘中高频访问）
 
-工作流的执行逻辑是：
+push 到 `main` 时只做离线校验，不访问 akshare 或远端行情站点：
+
+1. 安装 Python 依赖：`python -m pip install -e .`
+2. 运行 `python -m compileall src scripts`
+3. 使用 `SYNC_DRAGON_TIGER=0 SYNC_MARKET_OVERVIEW=0 SYNC_NEWS=0 BUILD_GRAPHS=0 bash run_daily_sync.sh` 做离线页面构建检查
+
+手动触发和定时触发才会生成并发布 GitHub Pages：
 
 1. 安装 Python 依赖：`python -m pip install -e .`
 2. 运行 `bash run_daily_sync.sh`
 3. 运行 `python scripts/build_pages_site.py`
 4. 将 `outputs/` 上传为 GitHub Pages artifact
 5. 发布到 GitHub Pages
+
+为降低 akshare 或目标站点封禁风险，Actions 里的默认策略是：
+
+- push 不抓取远端数据。
+- 定时任务默认同步龙虎榜和市场概览，但不默认同步新闻、不默认构建年度历史榜单。
+- 手动触发时才建议打开 `sync_news` / `build_graphs`。
+- 年度行业榜单只有传入 `market_overview_year` 时才生成；它会拉取大量历史行情，不建议每天跑。
+- Actions 默认设置 `STOCKGRAPH_HOT_MAX_WORKERS=1`、`STOCKGRAPH_HISTORY_MAX_WORKERS=2`、`STOCKGRAPH_REQUEST_DELAY_SECONDS=0.8`。
 
 手动触发时可选输入：
 
@@ -360,6 +471,7 @@ PYTHON_BIN=python
 
 - 仓库里保留源码、脚本、配置和文档
 - `outputs/` 仍然作为运行时生成目录被 `.gitignore` 忽略
+- `data/market_overview/*.json`、`data/shared_state/*.db`、`source/*.db` 也不提交，避免把运行缓存、数据库和抓取产物混入源码库
 - GitHub Actions 每次执行时重新构建 `outputs/`
 - Pages 实际发布的内容来自 CI 上传的 artifact
 
@@ -410,13 +522,15 @@ src/stockgraph/
 │   └── tagging.py               # 股票、行业、机构、情绪标签
 ├── infrastructure/data_sources/news/
 │   ├── base.py                  # 新闻源统一接口
-│   ├── eastmoney.py             # 东方财富资讯
-│   ├── cls.py                   # 财联社
-│   └── rss.py                   # RSS/通用网页源
+│   ├── akshare_source.py        # akshare 个股新闻 + 财联社快讯（已实现）
+│   ├── eastmoney.py             # 东方财富资讯（占位）
+│   ├── cls.py                   # 财联社（占位）
+│   └── rss.py                   # RSS/通用网页源（占位）
 ├── infrastructure/db/
-│   └── schema.py                # news_articles、news_entities、news_article_links
+│   ├── schema.py                # news_articles、news_entities、news_article_links
+│   └── repositories.py          # NewsRepository：save_batch、query_news_by_stock、query_all_news
 └── application/services/
-    └── news_ingestion.py        # 抓取 -> 清洗 -> 去重 -> 入库
+    └── news_ingestion.py        # 抓取 -> 清洗 -> 去重 -> 入库（支持全局 + 个股新闻）
 ```
 
 建议的数据流：
@@ -450,19 +564,26 @@ src/stockgraph/
 - 去重不要只靠 URL，至少同时保留 `hash(title + normalized_content)`。
 - 不把新闻处理逻辑塞进抓取脚本，抓取和语义处理必须解耦。
 
-接下来具体要做什么：
+已完成的工作：
 
-1. 在 `infrastructure/data_sources/news/eastmoney.py` 里接入第一个可用资讯源。
-2. 保证 `sync_news` 能真实抓回标题、正文、发布时间、原始链接。
-3. 在 `domain/news/tagging.py` 里补股票简称到代码的映射，而不只是正则命中股票代码。
-4. 给 `news_articles` 增加增量同步策略，例如按发布时间窗口抓取。
-5. 补一组最小测试数据，验证去重、标签和入库不重复。
+1. ✅ 在 `infrastructure/data_sources/news/akshare_source.py` 里接入了 akshare 个股新闻（`stock_news_em`）和财联社快讯（`stock_news_main_cx`）。
+2. ✅ `sync_news` 能真实抓回标题、正文、发布时间、原始链接，并支持按股票代码批量采集。
+3. ✅ `domain/news/tagging.py` 已有股票代码正则映射和情绪/事件类型标注。
+4. ✅ `NewsRepository` 支持按股票代码查询关联新闻（实体关联 + metadata 双路径）。
+5. ✅ 统一前端新增「个股新闻」tab，支持股票卡片浏览、情绪筛选、新闻时间线详情。
+
+接下来可以继续做的：
+
+1. 在 `domain/news/tagging.py` 里补股票简称到代码的映射，而不只是正则命中股票代码。
+2. 给 `news_articles` 增加增量同步策略，例如按发布时间窗口抓取。
+3. 补一组最小测试数据，验证去重、标签和入库不重复。
+4. 把新闻和龙虎榜数据联接，形成可解释事件上下文。
 
 新闻方向建议按这个顺序落地：
 
-1. 先只做一个稳定新闻源，不要一开始并行接多个源。
-2. 把抓取结果存稳，再做更复杂的实体识别。
-3. 先完成“新闻 -> 股票”关联，再考虑“新闻 -> 席位/主题/事件”。
+1. ✅ 先只做一个稳定新闻源（akshare 已接入）。
+2. ✅ 把抓取结果存稳，再做更复杂的实体识别。
+3. ✅ 先完成"新闻 -> 股票"关联，再考虑"新闻 -> 席位/主题/事件"。
 4. 等有稳定数据后，再把新闻接入图谱与大模型分析。
 
 ## 扩展路线二：图关系分析与挖掘
@@ -540,26 +661,30 @@ src/stockgraph/
 
 建议按三个阶段推进，这样风险最低，也最容易持续看到结果。
 
-### 第一阶段：把新闻接入做成可用能力
+### 第一阶段：把新闻接入做成可用能力 ✅ 已完成
 
 目标：
 
-- 至少一个真实新闻源可抓取
-- 新闻能增量入库
-- 新闻能关联到股票
+- ✅ 至少一个真实新闻源可抓取（akshare 个股新闻 + 财联社快讯）
+- ✅ 新闻能增量入库
+- ✅ 新闻能关联到股票
 
-要做的文件：
+已实现的文件：
 
-- `src/stockgraph/infrastructure/data_sources/news/eastmoney.py`
-- `src/stockgraph/application/services/news_ingestion.py`
-- `src/stockgraph/domain/news/tagging.py`
-- `src/stockgraph/infrastructure/db/repositories.py`
+- `src/stockgraph/infrastructure/data_sources/news/akshare_source.py` — akshare 个股新闻 + 财联社快讯数据源
+- `src/stockgraph/application/services/news_ingestion.py` — 全局新闻 + 个股新闻同步服务
+- `src/stockgraph/domain/news/tagging.py` — 股票代码正则映射、情绪/事件类型标注
+- `src/stockgraph/infrastructure/db/repositories.py` — NewsRepository 新增按股票代码查询方法
+- `src/stockgraph/presentation/templates/unified_app.py` — 新增「个股新闻」tab UI
+- `src/stockgraph/application/services/unified_frontend.py` — 新增 stock_news 数据构建
+- `src/stockgraph/cli/sync_news.py` — 支持 `--stock-codes`、`--stock-limit`、`--skip-stock-news` 参数
 
-验收标准：
+验收结果：
 
-- `python3 scripts/sync_news.py --limit 50` 能新增真实新闻数据
-- 数据库里 `news_articles / news_entities / news_article_links` 有内容
-- 同一新闻重复同步不会重复插入
+- ✅ `python3 scripts/sync_news.py --stock-codes "000001,600519" --stock-limit 10` 能新增真实新闻数据
+- ✅ 数据库里 `news_articles / news_entities / news_article_links` 有内容
+- ✅ 同一新闻重复同步不会重复插入（基于 hash 去重）
+- ✅ 统一前端「个股新闻」tab 正确展示股票卡片、情绪分布、新闻时间线
 
 ### 第二阶段：把图分析做成稳定分析层
 
@@ -582,30 +707,34 @@ src/stockgraph/
 - 数据库里 `graph_nodes / graph_edges / graph_snapshots` 有稳定结果
 - 能输出某个时间窗口内的关键席位、关键股票、强共现关系
 
-### 第三阶段：把新闻和图谱接到大模型分析
+### 第三阶段：把新闻和图谱接到大模型分析 ✅ 基本完成
 
 目标：
 
-- 让大模型基于“龙虎榜 + 新闻 + 图谱摘要”输出解释分析
+- 让大模型基于"龙虎榜 + 新闻 + 图谱摘要"输出解释分析
 - 支持个股、席位、主题三个维度的自然语言分析
 
-建议新增：
+已实现：
 
-- `src/stockgraph/domain/llm/prompts.py`
-- `src/stockgraph/domain/llm/contracts.py`
-- `src/stockgraph/application/services/llm_analysis.py`
+- 统一前端「🤖 AI 分析」tab，支持配置兼容 OpenAI 的 API（Base URL / API Key / 模型名称）
+- 后端 `_build_ai_analysis_data` 自动合并新闻和龙虎榜两个来源的股票上下文
+- 前端直调 OpenAI 兼容 API，支持流式输出（SSE）
+- 可自定义分析提示词，默认从资金面和消息面两个维度分析
+- API 配置持久化到 localStorage
 
-验收标准：
+待扩展：
 
-- 给定股票代码，能生成一份结构化分析
-- 给定席位名称，能输出近期活跃标的和共振关系
-- 输出结果明确区分事实数据、图谱推断和模型解释
+- `src/stockgraph/domain/llm/prompts.py` — 更多结构化提示词模板
+- `src/stockgraph/domain/llm/contracts.py` — 分析结果结构化契约
+- `src/stockgraph/application/services/llm_analysis.py` — 后端独立 LLM 分析服务
+- 席位维度、主题维度的自然语言分析
+- 图谱摘要接入分析上下文
 
 ## 推荐迭代顺序
 
 如果按投入产出比排序，建议这样推进：
 
-1. 先做新闻入库和股票映射。
-2. 再把新闻与龙虎榜数据联接，形成可解释事件上下文。
+1. ✅ 先做新闻入库和股票映射。（已完成：akshare 个股新闻 + 财联社快讯，支持按股票代码查询）
+2. ✅ 新闻与龙虎榜数据联接，形成可解释事件上下文。（已完成：AI 分析页面自动合并新闻+龙虎榜上下文）
 3. 再做图构建和共现分析。
-4. 最后再接入大模型，对“为什么这只股票上榜、哪些席位共振、是否有新闻驱动”做解释型分析。
+4. ✅ 接入大模型分析。（已完成：前端直调 OpenAI 兼容 API，支持流式输出，可配置 baseurl/key/model）

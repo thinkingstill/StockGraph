@@ -1,5 +1,6 @@
 import json
 import logging
+import os
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime
@@ -16,6 +17,7 @@ class AkshareMarketOverviewSource:
     def __init__(self) -> None:
         self.state_path = MARKET_DATA_DIR / "source_runtime_state.json"
         self.runtime_state = self._load_state()
+        self.request_delay_seconds = self._env_float("STOCKGRAPH_REQUEST_DELAY_SECONDS", 0.8)
 
     def get_exchange_date(self) -> str:
         sse_info = ak.stock_sse_summary()
@@ -71,11 +73,17 @@ class AkshareMarketOverviewSource:
 
     def fetch_xueqiu_hot(self) -> pd.DataFrame:
         hot_state = self._get_provider_state("hot_xueqiu", "parallel")
-        max_workers = 1 if hot_state.get("consecutive_failures", 0) >= 2 else 3
+        configured_workers = self._env_int("STOCKGRAPH_HOT_MAX_WORKERS", 1)
+        max_workers = 1 if hot_state.get("consecutive_failures", 0) >= 2 else max(1, configured_workers)
+
+        def polite_call(func):
+            self._polite_sleep()
+            return func()
+
         tasks = {
-            "关注": lambda: ak.stock_hot_follow_xq(symbol="最热门"),
-            "讨论": lambda: ak.stock_hot_tweet_xq(symbol="最热门").rename(columns={"关注": "讨论"}),
-            "交易": lambda: ak.stock_hot_deal_xq(symbol="最热门").rename(columns={"关注": "交易"}),
+            "关注": lambda: polite_call(lambda: ak.stock_hot_follow_xq(symbol="最热门")),
+            "讨论": lambda: polite_call(lambda: ak.stock_hot_tweet_xq(symbol="最热门")).rename(columns={"关注": "讨论"}),
+            "交易": lambda: polite_call(lambda: ak.stock_hot_deal_xq(symbol="最热门")).rename(columns={"关注": "交易"}),
         }
 
         results = {}
@@ -117,10 +125,12 @@ class AkshareMarketOverviewSource:
 
     def fetch_stock_histories(self, stock_codes: list[str], start_date: str, end_date: str) -> pd.DataFrame:
         history_state = self._get_provider_state("stock_history", "parallel")
-        max_workers = 4 if history_state.get("consecutive_failures", 0) >= 3 else 10
+        configured_workers = self._env_int("STOCKGRAPH_HISTORY_MAX_WORKERS", 2)
+        max_workers = min(2, configured_workers) if history_state.get("consecutive_failures", 0) >= 3 else max(1, configured_workers)
 
         def fetch_one(code: str) -> pd.DataFrame | None:
             try:
+                self._polite_sleep()
                 return ak.stock_zh_a_hist(
                     symbol=code,
                     period="daily",
@@ -170,10 +180,10 @@ class AkshareMarketOverviewSource:
         ]
         for name, func in segmented_sources:
             try:
+                self._polite_sleep()
                 frame = self._call_with_retry(func, name=name, attempts=2)
                 if frame is not None and not frame.empty:
                     segmented_frames.append(frame)
-                time.sleep(0.4)
             except Exception as exc:
                 logger.warning("分市场实时行情拉取失败 %s: %s", name, exc)
 
@@ -288,3 +298,21 @@ class AkshareMarketOverviewSource:
                 logger.warning("%s 第 %s/%s 次失败，%.1f 秒后重试: %s", name, attempt, attempts, sleep_seconds, exc)
                 time.sleep(sleep_seconds)
         raise last_exception
+
+    def _polite_sleep(self) -> None:
+        if self.request_delay_seconds > 0:
+            time.sleep(self.request_delay_seconds)
+
+    @staticmethod
+    def _env_int(name: str, default: int) -> int:
+        try:
+            return int(os.environ.get(name, str(default)))
+        except ValueError:
+            return default
+
+    @staticmethod
+    def _env_float(name: str, default: float) -> float:
+        try:
+            return float(os.environ.get(name, str(default)))
+        except ValueError:
+            return default
