@@ -190,6 +190,7 @@ def render_unified_app() -> str:
       <button class="tab-btn" data-tab="dragon_graph">龙虎榜关系网</button>
       <button class="tab-btn" data-tab="market_hot">热度图</button>
       <button class="tab-btn" data-tab="stock_super_graph">全 A 图谱</button>
+      <button class="tab-btn" data-tab="china_city_bubble">城市气泡图</button>
       <button class="tab-btn" data-tab="market_calendar">行业日历</button>
       <button class="tab-btn" data-tab="market_industry">行业强弱</button>
       <button class="tab-btn" data-tab="stock_news">个股新闻</button>
@@ -210,6 +211,10 @@ def render_unified_app() -> str:
 
     <section class="panel" id="panel-stock_super_graph">
       <div id="stockSuperGraphRoot" class="empty">正在加载全 A 图谱数据...</div>
+    </section>
+
+    <section class="panel" id="panel-china_city_bubble">
+      <div id="chinaCityBubbleRoot" class="empty">正在加载城市气泡图数据...</div>
     </section>
 
     <section class="panel" id="panel-market_calendar">
@@ -272,6 +277,7 @@ def render_unified_app() -> str:
         dragon_graph: 'dragonGraphRoot',
         market_hot: 'marketHotRoot',
         stock_super_graph: 'stockSuperGraphRoot',
+        china_city_bubble: 'chinaCityBubbleRoot',
         market_calendar: 'marketCalendarRoot',
         market_industry: 'marketIndustryRoot',
         stock_news: 'stockNewsRoot',
@@ -289,6 +295,7 @@ def render_unified_app() -> str:
         if (name === 'dragon_graph') renderDragonGraph(root, payload);
         if (name === 'market_hot') renderMarketHot(root, payload);
         if (name === 'stock_super_graph') renderStockSuperGraph(root, payload);
+        if (name === 'china_city_bubble') renderChinaCityBubble(root, payload);
         if (name === 'market_calendar') renderMarketCalendar(root, payload);
         if (name === 'market_industry') renderMarketIndustry(root, payload);
         if (name === 'stock_news') renderStockNews(root, payload);
@@ -742,6 +749,482 @@ def render_unified_app() -> str:
         if (params.dataType === 'node') {
           currentFocus = params.data.id;
           renderNodeDetail(params.data);
+        }
+      });
+      fillFilters();
+      draw();
+    }
+
+    function renderChinaCityBubble(root, payload) {
+      const dates = payload.date_list || [];
+      const dateMap = payload.dates || {};
+      if (!dates.length) {
+        root.innerHTML = '<div class="empty">城市气泡图数据当前不可用</div>';
+        return;
+      }
+      let currentDate = payload.latest_date || dates[0];
+      let chinaMapReady = false;
+      let currentFiltered = [];
+      let abortController = null;
+      const savedBaseUrl = localStorage.getItem('ai_base_url') || '';
+      const savedKey = localStorage.getItem('ai_api_key') || '';
+      const savedModel = localStorage.getItem('ai_model') || '';
+      const styles = `
+        <style>
+          .ccb-tools{display:flex;gap:10px;flex-wrap:wrap;margin-bottom:12px;align-items:center;}
+          .ccb-tools select,.ccb-tools input{min-width:132px;}
+          .ccb-layout{display:grid;grid-template-columns:minmax(0,1fr) 380px;gap:16px;align-items:start;}
+          .ccb-map-wrap{background:#fff;border:1px solid var(--line);border-radius:16px;padding:10px;}
+          .ccb-chart{width:100%;height:720px;min-height:620px;}
+          .ccb-side{background:#fff;border:1px solid var(--line);border-radius:16px;padding:14px;max-height:742px;overflow:auto;}
+          .ccb-side h3{margin:0 0 10px;font-size:16px;}
+          .ccb-note{font-size:12px;color:var(--muted);background:#f8faf7;border:1px solid var(--line);border-radius:12px;padding:10px 12px;margin-bottom:12px;line-height:1.6;}
+          .ccb-city-row{cursor:pointer;}
+          .ccb-city-row:hover{background:#f8faf7;}
+          .ccb-detail{font-size:13px;line-height:1.6;margin-top:12px;border-top:1px solid #edf0e8;padding-top:12px;}
+          .ccb-pill{display:inline-flex;align-items:center;gap:5px;border:1px solid var(--line);border-radius:999px;padding:4px 8px;margin:2px;font-size:12px;background:#fff;}
+          .ccb-ai{background:#fff;border:1px solid var(--line);border-radius:16px;padding:14px;margin-top:16px;}
+          .ccb-ai-grid{display:grid;grid-template-columns:1fr 1fr 1fr;gap:10px;margin-bottom:10px;}
+          .ccb-ai-grid label{display:block;font-size:12px;color:var(--muted);margin-bottom:4px;}
+          .ccb-ai-grid input{width:100%;}
+          .ccb-ai textarea{width:100%;min-height:78px;border:1px solid var(--line);border-radius:12px;padding:10px;font-family:inherit;resize:vertical;margin-bottom:10px;}
+          .ccb-ai-actions{display:flex;gap:10px;flex-wrap:wrap;align-items:center;margin-bottom:10px;}
+          .ccb-result{background:#f8faf7;border:1px solid var(--line);border-radius:14px;padding:14px;min-height:140px;white-space:pre-wrap;line-height:1.7;font-size:14px;}
+          .ccb-shot img{max-width:320px;border:1px solid var(--line);border-radius:12px;margin-top:8px;}
+          @media (max-width:1120px){.ccb-layout{grid-template-columns:1fr;}.ccb-side{max-height:none;}.ccb-chart{height:620px;}.ccb-ai-grid{grid-template-columns:1fr;}}
+        </style>`;
+      root.innerHTML = styles + `
+        <div class="stats">
+          <div class="stat"><div class="k">交易日</div><div class="v" id="ccb-date-v">-</div></div>
+          <div class="stat"><div class="k">城市</div><div class="v" id="ccb-city-v">0</div></div>
+          <div class="stat"><div class="k">上市公司</div><div class="v" id="ccb-stock-v">0</div></div>
+          <div class="stat"><div class="k">加权涨跌</div><div class="v" id="ccb-change-v">0%</div></div>
+        </div>
+        <div class="ccb-tools">
+          <select id="ccb-date">${dates.map(d => `<option value="${escapeHtml(d)}" ${d === currentDate ? 'selected' : ''}>${escapeHtml(d)}</option>`).join('')}</select>
+          <select id="ccb-province"><option value="">全部省份</option></select>
+          <select id="ccb-city"><option value="">全部城市</option></select>
+          <select id="ccb-industry"><option value="">全部行业</option></select>
+          <select id="ccb-cap"><option value="all">全部市值</option></select>
+          <select id="ccb-quality">
+            <option value="">全部定位质量</option>
+            <option value="mapped">精确映射</option>
+            <option value="basic_info">基础资料</option>
+            <option value="exchange_fallback">交易所降级</option>
+          </select>
+          <input id="ccb-min-count" type="number" min="1" step="1" placeholder="最少股票数">
+          <button class="primary" id="ccb-run">刷新</button>
+          <button id="ccb-reset">重置</button>
+        </div>
+        <div class="ccb-note" id="ccb-note">正在加载中国地图边界...</div>
+        <div class="ccb-layout">
+          <div class="ccb-map-wrap"><div id="ccb-chart" class="ccb-chart"></div></div>
+          <aside class="ccb-side">
+            <h3>城市排行</h3>
+            <table><thead><tr><th>城市</th><th>公司</th><th>总市值</th><th>涨跌</th></tr></thead><tbody id="ccb-table"></tbody></table>
+            <div id="ccb-detail" class="ccb-detail muted">点击地图气泡或城市排行查看行业和个股明细。</div>
+          </aside>
+        </div>
+        <div class="ccb-ai">
+          <h3 style="margin:0 0 12px;font-size:16px;">AI 行业新闻关联分析</h3>
+          <div class="ccb-ai-grid">
+            <div><label>API Base URL</label><input id="ccb-ai-baseurl" placeholder="https://api.openai.com/v1" value="${escapeHtml(savedBaseUrl)}"></div>
+            <div><label>API Key</label><input id="ccb-ai-key" type="password" placeholder="sk-..." value="${escapeHtml(savedKey)}"></div>
+            <div><label>模型名称</label><input id="ccb-ai-model" placeholder="gpt-4o-mini" value="${escapeHtml(savedModel)}"></div>
+          </div>
+          <textarea id="ccb-ai-prompt">请基于当前筛选后的城市气泡图、行业分布、总市值、涨跌幅，以及近期相关新闻，分析哪些行业或城市带出现了明显异动，并说明可能的时间关联和需要继续验证的风险点。</textarea>
+          <div class="ccb-ai-actions">
+            <button id="ccb-ai-save">保存配置</button>
+            <button class="primary" id="ccb-ai-run">分析当前筛选</button>
+            <button id="ccb-ai-stop" style="display:none;">停止</button>
+            <button id="ccb-shot">生成图表截图</button>
+            <label class="ccb-pill"><input id="ccb-attach-shot" type="checkbox" style="padding:0;">随请求附带截图</label>
+          </div>
+          <div id="ccb-shot-preview" class="ccb-shot"></div>
+          <div id="ccb-ai-status" class="muted" style="font-size:12px;margin-bottom:8px;"></div>
+          <div id="ccb-ai-result" class="ccb-result muted">筛选后点击分析，会复用本地保存的 OpenAI 兼容 API 配置，并把图表结构化摘要和相关新闻发送给模型。</div>
+        </div>`;
+
+      const chart = echarts.init(document.getElementById('ccb-chart'));
+
+      function formatMarketCap(v) {
+        const n = Number(v || 0);
+        if (n >= 1000000000000) return (n / 1000000000000).toFixed(2) + '万亿';
+        if (n >= 100000000) return (n / 100000000).toFixed(2) + '亿';
+        if (n >= 10000) return (n / 10000).toFixed(2) + '万';
+        return n.toFixed(0);
+      }
+      function colorByChange(pct) {
+        const value = Number(pct || 0);
+        if (Math.abs(value) < 0.01) return '#64748b';
+        const intensity = Math.min(Math.abs(value), 10) / 10;
+        if (value > 0) {
+          const g = Math.round(126 - 92 * intensity);
+          const b = Math.round(110 - 72 * intensity);
+          return `rgb(220,${g},${b})`;
+        }
+        const r = Math.round(96 - 54 * intensity);
+        const g = Math.round(156 - 76 * intensity);
+        const b = Math.round(118 - 72 * intensity);
+        return `rgb(${r},${g},${b})`;
+      }
+      function bubbleSize(marketCap) {
+        const n = Number(marketCap || 0);
+        if (!n) return 8;
+        return Math.max(10, Math.min(56, Math.sqrt(n / 100000000) * 2.6));
+      }
+      function currentPayload() {
+        return dateMap[currentDate] || { cities: [], filters: {}, stats: {} };
+      }
+      function qualityLabel(quality) {
+        const labels = { mapped: '精确映射', basic_info: '基础资料', exchange_fallback: '交易所降级', missing: '缺失' };
+        return labels[quality] || quality || '-';
+      }
+      function fillFilters() {
+        const data = currentPayload();
+        const filters = data.filters || {};
+        document.getElementById('ccb-province').innerHTML = '<option value="">全部省份</option>' + (filters.provinces || []).map(x => `<option value="${escapeHtml(x)}">${escapeHtml(x)}</option>`).join('');
+        document.getElementById('ccb-city').innerHTML = '<option value="">全部城市</option>' + (filters.cities || []).map(x => `<option value="${escapeHtml(x)}">${escapeHtml(x)}</option>`).join('');
+        document.getElementById('ccb-industry').innerHTML = '<option value="">全部行业</option>' + (filters.industries || []).map(x => `<option value="${escapeHtml(x)}">${escapeHtml(x)}</option>`).join('');
+        document.getElementById('ccb-cap').innerHTML = (filters.market_cap_buckets || [{key:'all',name:'全部市值'}]).map(x => `<option value="${escapeHtml(x.key)}">${escapeHtml(x.name)}</option>`).join('');
+      }
+      function cityPasses(city) {
+        const province = document.getElementById('ccb-province').value;
+        const cityName = document.getElementById('ccb-city').value;
+        const industry = document.getElementById('ccb-industry').value;
+        const cap = document.getElementById('ccb-cap').value;
+        const quality = document.getElementById('ccb-quality').value;
+        const minCount = Number(document.getElementById('ccb-min-count').value || 0);
+        if (province && city.province !== province) return false;
+        if (cityName && city.city !== cityName) return false;
+        if (industry && !(city.top_industries || []).some(x => x.industry === industry)) return false;
+        if (cap && cap !== 'all' && city.market_cap_bucket !== cap) return false;
+        if (quality && !(city.location_quality || {})[quality]) return false;
+        if (minCount && Number(city.stock_count || 0) < minCount) return false;
+        return true;
+      }
+      function aggregateIndustries(cities) {
+        const map = new Map();
+        cities.forEach(city => {
+          (city.top_industries || []).forEach(item => {
+            const current = map.get(item.industry) || { industry: item.industry, stock_count: 0, market_cap: 0, change_sum: 0 };
+            current.stock_count += Number(item.stock_count || 0);
+            current.market_cap += Number(item.market_cap || 0);
+            current.change_sum += Number(item.avg_change_pct || 0) * Number(item.stock_count || 0);
+            map.set(item.industry, current);
+          });
+        });
+        return Array.from(map.values()).map(x => ({
+          ...x,
+          avg_change_pct: x.stock_count ? x.change_sum / x.stock_count : 0
+        })).sort((a,b) => b.market_cap - a.market_cap);
+      }
+      function renderDetail(city) {
+        if (!city) {
+          document.getElementById('ccb-detail').innerHTML = '<span class="muted">点击地图气泡或城市排行查看行业和个股明细。</span>';
+          return;
+        }
+        const industries = (city.top_industries || []).slice(0, 8).map(x => `<span class="ccb-pill">${escapeHtml(x.industry)} · ${x.stock_count}家 · ${formatMarketCap(x.market_cap)}</span>`).join('');
+        const stocks = (city.stocks || []).slice(0, 12).map(x => `
+          <tr>
+            <td>${escapeHtml(x.name)} (${escapeHtml(x.code)})</td>
+            <td>${escapeHtml(x.industry)}</td>
+            <td>${formatMarketCap(x.market_cap)}</td>
+            <td class="${Number(x.change_pct || 0) >= 0 ? 'buy' : 'sell'}">${Number(x.change_pct || 0).toFixed(2)}%</td>
+          </tr>`).join('');
+        const quality = Object.entries(city.location_quality || {}).map(([k,v]) => `${qualityLabel(k)} ${v}`).join(' / ');
+        document.getElementById('ccb-detail').innerHTML = `
+          <div style="font-weight:700;margin-bottom:6px;">${escapeHtml(city.province)} · ${escapeHtml(city.city)}</div>
+          <div>公司数: ${city.stock_count}，总市值: ${formatMarketCap(city.total_market_cap)}，市值加权涨跌: <span class="${Number(city.avg_change_pct || 0) >= 0 ? 'buy' : 'sell'}">${Number(city.avg_change_pct || 0).toFixed(2)}%</span></div>
+          <div>上涨/下跌/平盘: ${city.up_count}/${city.down_count}/${city.flat_count}</div>
+          <div>定位质量: ${escapeHtml(quality || '-')}</div>
+          <div style="margin-top:8px;">${industries || '<span class="muted">暂无行业分布</span>'}</div>
+          <table style="margin-top:10px;"><thead><tr><th>股票</th><th>行业</th><th>市值</th><th>涨跌</th></tr></thead><tbody>${stocks}</tbody></table>`;
+      }
+      function loadScriptOnce(src) {
+        return new Promise((resolve, reject) => {
+          const existing = document.querySelector(`script[data-stockgraph-src="${src}"]`);
+          if (existing) {
+            existing.addEventListener('load', resolve, { once: true });
+            existing.addEventListener('error', () => reject(new Error(src)), { once: true });
+            if (existing.dataset.loaded === '1') resolve();
+            return;
+          }
+          const script = document.createElement('script');
+          script.src = src;
+          script.async = true;
+          script.dataset.stockgraphSrc = src;
+          script.onload = () => { script.dataset.loaded = '1'; resolve(); };
+          script.onerror = () => reject(new Error(src));
+          document.head.appendChild(script);
+        });
+      }
+      async function ensureChinaMap() {
+        if (chinaMapReady) return true;
+        if (echarts.getMap && echarts.getMap('china')) {
+          chinaMapReady = true;
+          return true;
+        }
+        const scriptUrls = [
+          './data/china_echarts_map.js',
+          'https://cdn.jsdelivr.net/npm/echarts-maps@1.1.0/china.js'
+        ];
+        for (const url of scriptUrls) {
+          try {
+            await loadScriptOnce(url);
+            if (!echarts.getMap || echarts.getMap('china')) {
+              chinaMapReady = true;
+              return true;
+            }
+          } catch (err) { /* try next source */ }
+        }
+        try {
+          const res = await fetch('https://geo.datav.aliyun.com/areas_v3/bound/100000_full.json', { cache: 'force-cache' });
+          if (!res.ok) throw new Error('HTTP ' + res.status);
+          const geo = await res.json();
+          echarts.registerMap('china', geo);
+          chinaMapReady = true;
+          return true;
+        } catch (err) {
+          document.getElementById('ccb-note').innerHTML = '中国地图边界加载失败，城市排行和 AI 分析仍可使用。请确认 ./data/china_echarts_map.js 是否已生成。最后错误: ' + escapeHtml(err.message);
+          return false;
+        }
+      }
+      async function draw() {
+        currentDate = document.getElementById('ccb-date').value;
+        const data = currentPayload();
+        const stats = data.stats || {};
+        const quality = stats.location_quality || {};
+        currentFiltered = (data.cities || []).filter(cityPasses);
+        document.getElementById('ccb-date-v').textContent = currentDate;
+        document.getElementById('ccb-city-v').textContent = currentFiltered.length;
+        document.getElementById('ccb-stock-v').textContent = currentFiltered.reduce((sum, x) => sum + Number(x.stock_count || 0), 0);
+        const filteredCap = currentFiltered.reduce((sum, x) => sum + Number(x.total_market_cap || 0), 0);
+        const filteredWeighted = currentFiltered.reduce((sum, x) => sum + Number(x.avg_change_pct || 0) * Number(x.total_market_cap || 0), 0);
+        const filteredChange = filteredCap ? filteredWeighted / filteredCap : 0;
+        document.getElementById('ccb-change-v').innerHTML = `<span class="${filteredChange >= 0 ? 'buy' : 'sell'}">${filteredChange.toFixed(2)}%</span>`;
+        document.getElementById('ccb-note').innerHTML =
+          `定位质量: 精确映射 ${quality.mapped || 0} / 基础资料 ${quality.basic_info || 0} / 交易所降级 ${quality.exchange_fallback || 0}。` +
+          `当前筛选 ${currentFiltered.length} 个城市，总市值 ${formatMarketCap(filteredCap)}。` +
+          `精确城市数据可通过 ${escapeHtml(payload.location_mapping?.path || 'data/reference/stock_location_mapping.json')} 扩展。`;
+        document.getElementById('ccb-table').innerHTML = currentFiltered.slice(0, 80).map((city, idx) => `
+          <tr class="ccb-city-row" data-index="${idx}">
+            <td>${escapeHtml(city.province)}<br><strong>${escapeHtml(city.city)}</strong></td>
+            <td>${city.stock_count}</td>
+            <td>${formatMarketCap(city.total_market_cap)}</td>
+            <td class="${Number(city.avg_change_pct || 0) >= 0 ? 'buy' : 'sell'}">${Number(city.avg_change_pct || 0).toFixed(2)}%</td>
+          </tr>`).join('');
+        document.querySelectorAll('.ccb-city-row').forEach(row => {
+          row.addEventListener('click', () => {
+            const idx = Number(row.dataset.index || 0);
+            renderDetail(currentFiltered[idx]);
+            chart.dispatchAction({ type: 'highlight', seriesIndex: 0, dataIndex: idx });
+          });
+        });
+        if (!(await ensureChinaMap())) return;
+        chart.setOption({
+          tooltip: {
+            trigger: 'item',
+            confine: true,
+            formatter: p => {
+              const city = p.data || {};
+              const industries = (city.top_industries || []).slice(0, 5).map(x => `${escapeHtml(x.industry)} ${x.stock_count}家`).join('<br/>');
+              return `<strong>${escapeHtml(city.province)} · ${escapeHtml(city.city)}</strong><br/>` +
+                `公司数: ${city.stock_count}<br/>总市值: ${formatMarketCap(city.total_market_cap)}<br/>` +
+                `市值加权涨跌: ${Number(city.avg_change_pct || 0).toFixed(2)}%<br/>` +
+                `上涨/下跌/平盘: ${city.up_count}/${city.down_count}/${city.flat_count}<br/>` +
+                `主要行业:<br/>${industries || '-'}`;
+            }
+          },
+          geo: {
+            map: 'china',
+            roam: true,
+            zoom: 1.18,
+            label: { show: false },
+            itemStyle: { areaColor: '#eef5ec', borderColor: '#b9c6b5' },
+            emphasis: { itemStyle: { areaColor: '#dce8d8' }, label: { show: false } }
+          },
+          series: [{
+            name: '城市总市值',
+            type: 'scatter',
+            coordinateSystem: 'geo',
+            data: currentFiltered.map(city => ({
+              ...city,
+              name: city.city,
+              value: [city.lng, city.lat, city.total_market_cap, city.avg_change_pct, city.stock_count],
+              itemStyle: { color: colorByChange(city.avg_change_pct), borderColor: '#fff', borderWidth: 1, opacity: 0.88 }
+            })),
+            symbolSize: value => bubbleSize(value[2]),
+            emphasis: { focus: 'self', scale: 1.35, label: { show: true, formatter: '{b}', position: 'right' } },
+            label: {
+              show: true,
+              formatter: p => Number(p.data.stock_count || 0) >= 80 ? p.name : '',
+              color: '#182026',
+              fontSize: 10,
+              position: 'right'
+            }
+          }]
+        }, true);
+      }
+      function buildAIContext() {
+        const industries = aggregateIndustries(currentFiltered).slice(0, 10);
+        const selectedIndustry = document.getElementById('ccb-industry').value;
+        const industryNames = selectedIndustry ? [selectedIndustry] : industries.map(x => x.industry).slice(0, 8);
+        const newsByIndustry = payload.news_by_industry || {};
+        const news = [];
+        industryNames.forEach(name => (newsByIndustry[name] || []).slice(0, 8).forEach(n => news.push({ industry: name, ...n })));
+        news.sort((a,b) => String(b.published_at || '').localeCompare(String(a.published_at || '')));
+        const filters = {
+          date: currentDate,
+          province: document.getElementById('ccb-province').value || '全部',
+          city: document.getElementById('ccb-city').value || '全部',
+          industry: selectedIndustry || '全部',
+          market_cap_bucket: document.getElementById('ccb-cap').value || 'all',
+          min_stock_count: document.getElementById('ccb-min-count').value || '未限制',
+        };
+        let text = '## A股城市气泡图筛选上下文\\n';
+        text += '筛选条件: ' + JSON.stringify(filters, null, 2) + '\\n\\n';
+        text += '### 城市排行 Top 15\\n';
+        currentFiltered.slice(0, 15).forEach((city, idx) => {
+          text += `${idx + 1}. ${city.province}${city.city}: 公司${city.stock_count}家, 总市值${formatMarketCap(city.total_market_cap)}, 加权涨跌${Number(city.avg_change_pct || 0).toFixed(2)}%, 上涨/下跌/平盘 ${city.up_count}/${city.down_count}/${city.flat_count}\\n`;
+        });
+        text += '\\n### 行业市值 Top 10\\n';
+        industries.forEach((item, idx) => {
+          text += `${idx + 1}. ${item.industry}: 公司${item.stock_count}家, 市值${formatMarketCap(item.market_cap)}, 平均涨跌${Number(item.avg_change_pct || 0).toFixed(2)}%\\n`;
+        });
+        text += '\\n### 近期相关新闻\\n';
+        news.slice(0, 28).forEach((n, idx) => {
+          text += `${idx + 1}. [${n.industry}/${n.sentiment || '中性'}] ${n.title} (${n.source || '-'}, ${n.published_at || '-'})\\n`;
+          if (n.content) text += `   摘要: ${String(n.content).slice(0, 180)}\\n`;
+        });
+        if (!news.length) text += '当前筛选行业暂无可关联新闻。\\n';
+        return text;
+      }
+      document.getElementById('ccb-date').addEventListener('change', () => {
+        currentDate = document.getElementById('ccb-date').value;
+        fillFilters();
+        draw();
+      });
+      ['ccb-province','ccb-city','ccb-industry','ccb-cap','ccb-quality'].forEach(id => document.getElementById(id).addEventListener('change', draw));
+      document.getElementById('ccb-min-count').addEventListener('keyup', e => { if (e.key === 'Enter') draw(); });
+      document.getElementById('ccb-run').addEventListener('click', draw);
+      document.getElementById('ccb-reset').addEventListener('click', () => {
+        document.getElementById('ccb-province').value = '';
+        document.getElementById('ccb-city').value = '';
+        document.getElementById('ccb-industry').value = '';
+        document.getElementById('ccb-cap').value = 'all';
+        document.getElementById('ccb-quality').value = '';
+        document.getElementById('ccb-min-count').value = '';
+        renderDetail(null);
+        draw();
+      });
+      chart.on('click', params => {
+        if (params.componentSubType === 'scatter') renderDetail(params.data);
+      });
+      window.addEventListener('resize', () => chart.resize());
+      document.getElementById('ccb-shot').addEventListener('click', () => {
+        const url = chart.getDataURL({ type: 'png', pixelRatio: 2, backgroundColor: '#ffffff' });
+        document.getElementById('ccb-shot-preview').innerHTML = `<a href="${url}" download="china-city-bubble-${escapeHtml(currentDate)}.png">下载截图</a><br><img src="${url}" alt="城市气泡图截图">`;
+      });
+      document.getElementById('ccb-ai-save').addEventListener('click', () => {
+        localStorage.setItem('ai_base_url', document.getElementById('ccb-ai-baseurl').value.trim());
+        localStorage.setItem('ai_api_key', document.getElementById('ccb-ai-key').value.trim());
+        localStorage.setItem('ai_model', document.getElementById('ccb-ai-model').value.trim());
+        document.getElementById('ccb-ai-status').textContent = '配置已保存到本地浏览器';
+      });
+      document.getElementById('ccb-ai-stop').addEventListener('click', () => {
+        if (abortController) abortController.abort();
+      });
+      document.getElementById('ccb-ai-run').addEventListener('click', async () => {
+        const baseUrl = (document.getElementById('ccb-ai-baseurl').value || localStorage.getItem('ai_base_url') || '').replace(/\\/+$/, '');
+        const apiKey = document.getElementById('ccb-ai-key').value || localStorage.getItem('ai_api_key') || '';
+        const model = document.getElementById('ccb-ai-model').value || localStorage.getItem('ai_model') || '';
+        if (!baseUrl || !apiKey || !model) {
+          alert('请先配置 API Base URL、API Key 和模型名称');
+          return;
+        }
+        const prompt = document.getElementById('ccb-ai-prompt').value.trim();
+        const contextText = buildAIContext();
+        const attachShot = document.getElementById('ccb-attach-shot').checked;
+        const screenshot = attachShot ? chart.getDataURL({ type: 'png', pixelRatio: 1.5, backgroundColor: '#ffffff' }) : '';
+        const resultEl = document.getElementById('ccb-ai-result');
+        const statusEl = document.getElementById('ccb-ai-status');
+        const runBtn = document.getElementById('ccb-ai-run');
+        const stopBtn = document.getElementById('ccb-ai-stop');
+        resultEl.textContent = '正在请求 AI 分析...';
+        resultEl.classList.remove('muted');
+        statusEl.textContent = '';
+        runBtn.disabled = true;
+        stopBtn.style.display = 'inline-block';
+        abortController = new AbortController();
+        try {
+          const userContent = attachShot ? [
+            { type: 'text', text: contextText + '\\n---\\n' + prompt },
+            { type: 'image_url', image_url: { url: screenshot } }
+          ] : contextText + '\\n---\\n' + prompt;
+          const resp = await fetch(baseUrl + '/chat/completions', {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json',
+              'Authorization': 'Bearer ' + apiKey,
+            },
+            body: JSON.stringify({
+              model,
+              messages: [
+                { role: 'system', content: '你是一位专业的 A 股市场和产业新闻分析师。请基于结构化市场数据、城市分布和新闻事件做审慎分析，明确哪些结论来自数据，哪些只是待验证假设。回答使用中文。' },
+                { role: 'user', content: userContent }
+              ],
+              stream: true,
+              temperature: 0.5,
+              max_tokens: 2200,
+            }),
+            signal: abortController.signal,
+          });
+          if (!resp.ok) {
+            const errText = await resp.text();
+            throw new Error('API 请求失败 (' + resp.status + '): ' + errText.substring(0, 300));
+          }
+          const reader = resp.body.getReader();
+          const decoder = new TextDecoder();
+          let buffer = '';
+          let fullText = '';
+          let chunks = 0;
+          resultEl.textContent = '';
+          while (true) {
+            const { done, value } = await reader.read();
+            if (done) break;
+            buffer += decoder.decode(value, { stream: true });
+            const lines = buffer.split('\\n');
+            buffer = lines.pop() || '';
+            for (const line of lines) {
+              const trimmed = line.trim();
+              if (!trimmed || !trimmed.startsWith('data:')) continue;
+              const data = trimmed.slice(5).trim();
+              if (data === '[DONE]') continue;
+              try {
+                const json = JSON.parse(data);
+                const delta = json.choices && json.choices[0] && json.choices[0].delta;
+                if (delta && delta.content) {
+                  fullText += delta.content;
+                  chunks++;
+                  resultEl.textContent = fullText;
+                }
+              } catch (e) { /* ignore malformed stream chunk */ }
+            }
+          }
+          statusEl.textContent = '分析完成，共 ' + chunks + ' 个流式片段';
+        } catch (err) {
+          if (err.name === 'AbortError') {
+            resultEl.textContent += '\\n\\n已停止生成';
+            statusEl.textContent = '已手动停止';
+          } else {
+            resultEl.textContent = '错误: ' + err.message;
+            statusEl.textContent = '请求失败';
+          }
+        } finally {
+          runBtn.disabled = false;
+          stopBtn.style.display = 'none';
+          abortController = null;
         }
       });
       fillFilters();

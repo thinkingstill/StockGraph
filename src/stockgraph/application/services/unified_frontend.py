@@ -2,11 +2,12 @@ from __future__ import annotations
 
 import json
 import math
+import shutil
 from collections import defaultdict
 from datetime import datetime
 from pathlib import Path
 
-from stockgraph.core import APP_DATA_DIR, APP_OUTPUT_DIR, MARKET_DATA_DIR, ensure_runtime_dirs
+from stockgraph.core import APP_DATA_DIR, APP_OUTPUT_DIR, MARKET_DATA_DIR, REFERENCE_DATA_DIR, ensure_runtime_dirs
 from stockgraph.domain.dragon_tiger import FAMOUS_TRADERS
 from stockgraph.domain.market_overview import get_exchange
 from stockgraph.infrastructure.db import DragonTigerRepository
@@ -34,6 +35,7 @@ class UnifiedFrontendService:
             "market_calendar": self._build_market_calendar_data(),
             "market_industry": self._build_market_industry_data(),
             "stock_super_graph": self._build_stock_super_graph_data(),
+            "china_city_bubble": self._build_china_city_bubble_data(),
             "stock_news": self._build_stock_news_data(),
             "ai_analysis": self._build_ai_analysis_data(),
         }
@@ -43,6 +45,7 @@ class UnifiedFrontendService:
         }
         manifest_path = APP_DATA_DIR / "app_manifest.json"
         manifest_path.write_text(json.dumps(manifest, ensure_ascii=False, default=str), encoding="utf-8")
+        self._copy_static_assets()
         app_path = APP_OUTPUT_DIR / "index.html"
         app_path.write_text(render_unified_app(), encoding="utf-8")
         return [app_path, manifest_path]
@@ -309,6 +312,257 @@ class UnifiedFrontendService:
         }
         return self._write_section("stock_super_graph.json", payload)
 
+    def _build_china_city_bubble_data(self) -> dict:
+        """构建按城市聚合的中国地图气泡数据，复用全市场日行情和基础股本数据。"""
+        stock_files = sorted(MARKET_DATA_DIR.glob("stock_daily_*.json"), reverse=True)
+        if not stock_files:
+            return self._missing("城市气泡图需要先生成 stock_daily 市场数据")
+
+        basic_lookup = self._load_stock_basic_info()
+        location_mapping = self._load_stock_location_mapping()
+        date_payloads: dict[str, dict] = {}
+        date_list: list[str] = []
+        latest_industry_by_code: dict[str, str] = {}
+        location_quality_total: dict[str, int] = defaultdict(int)
+
+        for stock_path in stock_files:
+            trade_date = self._format_trade_date(self._extract_trade_date(stock_path.name))
+            if not trade_date:
+                continue
+            stock_rows = self._read_json_list(stock_path)
+            if not stock_rows:
+                continue
+
+            city_groups: dict[str, dict] = {}
+            quality_counts: dict[str, int] = defaultdict(int)
+            missing_market_cap_count = 0
+            total_stock_count = 0
+            located_stock_count = 0
+
+            for row in stock_rows:
+                code = self._normalize_stock_code(row.get("代码"))
+                if not code:
+                    continue
+                total_stock_count += 1
+                basic = basic_lookup.get(code, {})
+                stock_name = str(row.get("名称") or basic.get("stock_name") or code)
+                daily_industry = self._clean_group_name(row.get("行业"))
+                basic_industry = self._clean_group_name(basic.get("industry"))
+                industry = daily_industry if daily_industry != "未知" else basic_industry
+                if industry != "未知":
+                    latest_industry_by_code[code] = industry
+                exchange = self._clean_group_name(basic.get("exchange") or get_exchange(code), fallback=get_exchange(code))
+                latest_price = self._as_float(row.get("最新价")) or 0.0
+                change_pct = self._as_float(row.get("涨跌幅")) or 0.0
+                amount = self._as_float(row.get("成交额")) or 0.0
+                volume = self._as_float(row.get("成交量")) or 0.0
+                total_shares = self._as_float(basic.get("total_shares"))
+                float_shares = self._as_float(basic.get("float_shares"))
+                share_base = total_shares or float_shares
+                market_cap = latest_price * share_base if latest_price and share_base else None
+                if not market_cap:
+                    missing_market_cap_count += 1
+
+                location = self._resolve_stock_location(code, exchange, basic, location_mapping)
+                quality = location.get("quality", "missing")
+                quality_counts[quality] += 1
+                location_quality_total[quality] += 1
+                lng = self._as_float(location.get("lng"))
+                lat = self._as_float(location.get("lat"))
+                if lng is None or lat is None:
+                    continue
+                located_stock_count += 1
+
+                province = str(location.get("province") or "未知")
+                city = self._normalize_city_name(location.get("city") or "未知")
+                city_key = f"{province}|{city}"
+                group = city_groups.setdefault(
+                    city_key,
+                    {
+                        "province": province,
+                        "city": city,
+                        "lng": lng,
+                        "lat": lat,
+                        "stock_count": 0,
+                        "up_count": 0,
+                        "down_count": 0,
+                        "flat_count": 0,
+                        "total_market_cap": 0.0,
+                        "known_market_cap_count": 0,
+                        "weighted_change_sum": 0.0,
+                        "simple_change_sum": 0.0,
+                        "amount": 0.0,
+                        "volume": 0.0,
+                        "industries": defaultdict(lambda: {"stock_count": 0, "market_cap": 0.0, "change_sum": 0.0}),
+                        "location_quality": defaultdict(int),
+                        "stocks": [],
+                    },
+                )
+                group["stock_count"] += 1
+                group["simple_change_sum"] += change_pct
+                group["amount"] += amount
+                group["volume"] += volume
+                group["location_quality"][quality] += 1
+                if change_pct > 0:
+                    group["up_count"] += 1
+                elif change_pct < 0:
+                    group["down_count"] += 1
+                else:
+                    group["flat_count"] += 1
+                if market_cap:
+                    group["total_market_cap"] += market_cap
+                    group["known_market_cap_count"] += 1
+                    group["weighted_change_sum"] += change_pct * market_cap
+                industry_group = group["industries"][industry]
+                industry_group["stock_count"] += 1
+                industry_group["market_cap"] += market_cap or 0.0
+                industry_group["change_sum"] += change_pct
+                group["stocks"].append(
+                    {
+                        "code": code,
+                        "name": stock_name,
+                        "industry": industry,
+                        "exchange": exchange,
+                        "latest_price": round(latest_price, 4),
+                        "change_pct": round(change_pct, 4),
+                        "market_cap": round(market_cap, 2) if market_cap else None,
+                        "market_cap_source": "total_shares" if total_shares else "float_shares" if float_shares else "missing",
+                        "amount": round(amount, 2),
+                    }
+                )
+
+            cities: list[dict] = []
+            province_set: set[str] = set()
+            industry_set: set[str] = set()
+            total_market_cap = 0.0
+            weighted_change_sum = 0.0
+            weighted_market_cap = 0.0
+            up_count = down_count = flat_count = 0
+
+            for group in city_groups.values():
+                industries = []
+                for name, item in group["industries"].items():
+                    industry_set.add(name)
+                    count = int(item["stock_count"])
+                    industries.append(
+                        {
+                            "industry": name,
+                            "stock_count": count,
+                            "market_cap": round(float(item["market_cap"]), 2),
+                            "avg_change_pct": round(float(item["change_sum"]) / count, 4) if count else 0.0,
+                        }
+                    )
+                industries.sort(key=lambda item: (item["market_cap"], item["stock_count"]), reverse=True)
+                stocks = sorted(
+                    group["stocks"],
+                    key=lambda item: (item["market_cap"] is not None, item["market_cap"] or 0.0),
+                    reverse=True,
+                )[:80]
+                avg_change_pct = (
+                    group["weighted_change_sum"] / group["total_market_cap"]
+                    if group["total_market_cap"]
+                    else group["simple_change_sum"] / group["stock_count"]
+                    if group["stock_count"]
+                    else 0.0
+                )
+                city_total_market_cap = float(group["total_market_cap"])
+                total_market_cap += city_total_market_cap
+                weighted_change_sum += float(group["weighted_change_sum"])
+                weighted_market_cap += city_total_market_cap
+                up_count += int(group["up_count"])
+                down_count += int(group["down_count"])
+                flat_count += int(group["flat_count"])
+                province_set.add(group["province"])
+                cities.append(
+                    {
+                        "province": group["province"],
+                        "city": group["city"],
+                        "lng": round(float(group["lng"]), 6),
+                        "lat": round(float(group["lat"]), 6),
+                        "value": [
+                            round(float(group["lng"]), 6),
+                            round(float(group["lat"]), 6),
+                            round(city_total_market_cap, 2),
+                            round(avg_change_pct, 4),
+                            int(group["stock_count"]),
+                        ],
+                        "stock_count": int(group["stock_count"]),
+                        "known_market_cap_count": int(group["known_market_cap_count"]),
+                        "total_market_cap": round(city_total_market_cap, 2),
+                        "avg_change_pct": round(avg_change_pct, 4),
+                        "amount": round(float(group["amount"]), 2),
+                        "volume": round(float(group["volume"]), 2),
+                        "up_count": int(group["up_count"]),
+                        "down_count": int(group["down_count"]),
+                        "flat_count": int(group["flat_count"]),
+                        "top_industries": industries[:12],
+                        "location_quality": dict(group["location_quality"]),
+                        "stocks": stocks,
+                        "market_cap_bucket": self._market_cap_bucket(city_total_market_cap),
+                    }
+                )
+            cities.sort(key=lambda item: item["total_market_cap"], reverse=True)
+            date_payloads[trade_date] = {
+                "date": trade_date,
+                "cities": cities,
+                "stats": {
+                    "stock_count": total_stock_count,
+                    "located_stock_count": located_stock_count,
+                    "city_count": len(cities),
+                    "province_count": len(province_set),
+                    "industry_count": len(industry_set),
+                    "total_market_cap": round(total_market_cap, 2),
+                    "weighted_avg_change_pct": round(weighted_change_sum / weighted_market_cap, 4) if weighted_market_cap else 0.0,
+                    "up_count": up_count,
+                    "down_count": down_count,
+                    "flat_count": flat_count,
+                    "missing_market_cap_count": missing_market_cap_count,
+                    "location_quality": dict(quality_counts),
+                },
+                "filters": {
+                    "provinces": sorted(province_set),
+                    "cities": sorted({city["city"] for city in cities}),
+                    "industries": sorted(industry_set),
+                    "market_cap_buckets": [
+                        {"key": "all", "name": "全部市值"},
+                        {"key": "lt_500y", "name": "500亿以下"},
+                        {"key": "500y_1000y", "name": "500-1000亿"},
+                        {"key": "1000y_3000y", "name": "1000-3000亿"},
+                        {"key": "3000y_10000y", "name": "3000亿-1万亿"},
+                        {"key": "gte_10000y", "name": "1万亿以上"},
+                    ],
+                },
+            }
+            date_list.append(trade_date)
+
+        if not date_payloads:
+            return self._missing("城市气泡图有效数据为空")
+
+        news_by_industry = self._build_news_by_industry(latest_industry_by_code)
+        payload = {
+            "schema_version": "china_city_bubble.v1",
+            "latest_date": date_list[0],
+            "date_list": date_list,
+            "dates": date_payloads,
+            "news_by_industry": news_by_industry,
+            "market_cap_unit": "yuan",
+            "location_mapping": {
+                "path": str(REFERENCE_DATA_DIR / "stock_location_mapping.json"),
+                "available": bool(location_mapping),
+                "schema": {
+                    "000001": {
+                        "province": "广东省",
+                        "city": "深圳",
+                        "lng": 114.0579,
+                        "lat": 22.5431,
+                    }
+                },
+                "note": "当前基础股本文件不含注册地/办公地。提供 stock_location_mapping.json 后会优先使用精确城市定位，缺失股票按交易所所在地降级聚合。",
+            },
+            "location_quality": dict(location_quality_total),
+        }
+        return self._write_section("china_city_bubble.json", payload)
+
     def _build_stock_super_graph_for_date(self, trade_date: str, stock_rows: list[dict], hot_rows: list[dict]) -> dict:
         nodes: dict[str, dict] = {}
         links: dict[tuple[str, str, str], dict] = {}
@@ -536,11 +790,252 @@ class UnifiedFrontendService:
         }
         return self._write_section("ai_analysis.json", payload)
 
+    def _load_stock_basic_info(self) -> dict[str, dict]:
+        path = REFERENCE_DATA_DIR / "stock_basic_info.pkl"
+        if not path.exists():
+            return {}
+        try:
+            import pandas as pd
+
+            df = pd.read_pickle(path)
+        except Exception:
+            return {}
+
+        lookup: dict[str, dict] = {}
+        for row in df.to_dict("records"):
+            code = self._normalize_stock_code(row.get("股票代码") or row.get("代码") or row.get("stock_code"))
+            if not code:
+                continue
+            lookup[code] = {
+                "stock_name": row.get("股票简称") or row.get("名称") or row.get("stock_name"),
+                "industry": self._clean_group_name(row.get("行业") or row.get("industry")),
+                "exchange": self._clean_group_name(row.get("交易所") or row.get("exchange"), fallback=get_exchange(code)),
+                "total_shares": self._as_float(row.get("总股本") or row.get("total_shares")),
+                "float_shares": self._as_float(row.get("流通股") or row.get("float_shares")),
+                "province": row.get("省份") or row.get("province") or row.get("注册省份"),
+                "city": row.get("城市") or row.get("city") or row.get("注册城市"),
+                "lng": self._as_float(row.get("lng") or row.get("经度")),
+                "lat": self._as_float(row.get("lat") or row.get("纬度")),
+            }
+        return lookup
+
+    def _load_stock_location_mapping(self) -> dict[str, dict]:
+        path = REFERENCE_DATA_DIR / "stock_location_mapping.json"
+        if not path.exists():
+            return {}
+        try:
+            payload = json.loads(path.read_text(encoding="utf-8"))
+        except Exception:
+            return {}
+        if isinstance(payload, list):
+            rows = payload
+        elif isinstance(payload, dict):
+            if isinstance(payload.get("stocks"), list):
+                rows = payload["stocks"]
+            else:
+                rows = [{**value, "code": key} for key, value in payload.items() if isinstance(value, dict)]
+        else:
+            return {}
+        mapping: dict[str, dict] = {}
+        for row in rows:
+            code = self._normalize_stock_code(row.get("code") or row.get("stock_code") or row.get("股票代码"))
+            if not code:
+                continue
+            mapping[code] = {
+                "province": row.get("province") or row.get("省份"),
+                "city": row.get("city") or row.get("城市"),
+                "lng": self._as_float(row.get("lng") or row.get("longitude") or row.get("经度")),
+                "lat": self._as_float(row.get("lat") or row.get("latitude") or row.get("纬度")),
+                "source": row.get("source") or row.get("来源") or "stock_location_mapping",
+            }
+        return mapping
+
+    def _resolve_stock_location(self, code: str, exchange: str, basic: dict, location_mapping: dict[str, dict]) -> dict:
+        mapped = location_mapping.get(code)
+        if mapped and mapped.get("province") and mapped.get("city"):
+            lng = self._as_float(mapped.get("lng"))
+            lat = self._as_float(mapped.get("lat"))
+            if lng is None or lat is None:
+                lng, lat = self._resolve_city_coordinate(str(mapped.get("city")))
+            return {
+                "province": mapped.get("province"),
+                "city": mapped.get("city"),
+                "lng": lng,
+                "lat": lat,
+                "quality": "mapped",
+                "source": mapped.get("source") or "stock_location_mapping",
+            }
+
+        if basic.get("province") and basic.get("city"):
+            lng = self._as_float(basic.get("lng"))
+            lat = self._as_float(basic.get("lat"))
+            if lng is None or lat is None:
+                lng, lat = self._resolve_city_coordinate(str(basic.get("city")))
+            if lng is not None and lat is not None:
+                return {
+                    "province": basic.get("province"),
+                    "city": basic.get("city"),
+                    "lng": lng,
+                    "lat": lat,
+                    "quality": "basic_info",
+                    "source": "stock_basic_info",
+                }
+
+        exchange_locations = {
+            "上海": {"province": "上海市", "city": "上海", "lng": 121.4737, "lat": 31.2304},
+            "深圳": {"province": "广东省", "city": "深圳", "lng": 114.0579, "lat": 22.5431},
+            "北京": {"province": "北京市", "city": "北京", "lng": 116.4074, "lat": 39.9042},
+        }
+        exchange_text = str(exchange or "")
+        if "上海" in exchange_text:
+            location = exchange_locations["上海"]
+        elif "深圳" in exchange_text:
+            location = exchange_locations["深圳"]
+        elif "北京" in exchange_text or code.startswith(("8", "9")):
+            location = exchange_locations["北京"]
+        else:
+            return {"province": "未知", "city": "未知", "lng": None, "lat": None, "quality": "missing"}
+        return {**location, "quality": "exchange_fallback", "source": "exchange"}
+
+    @staticmethod
+    def _resolve_city_coordinate(city: str) -> tuple[float | None, float | None]:
+        normalized = city.replace("市", "").replace("地区", "").strip()
+        coords = {
+            "北京": (116.4074, 39.9042),
+            "上海": (121.4737, 31.2304),
+            "深圳": (114.0579, 22.5431),
+            "广州": (113.2644, 23.1291),
+            "杭州": (120.1551, 30.2741),
+            "南京": (118.7969, 32.0603),
+            "苏州": (120.5853, 31.2989),
+            "宁波": (121.5504, 29.8746),
+            "无锡": (120.3124, 31.4909),
+            "常州": (119.9741, 31.8113),
+            "绍兴": (120.5821, 29.9971),
+            "嘉兴": (120.7555, 30.7461),
+            "台州": (121.4208, 28.6564),
+            "温州": (120.6994, 27.9949),
+            "合肥": (117.2272, 31.8206),
+            "芜湖": (118.4331, 31.3529),
+            "济南": (117.1201, 36.6512),
+            "青岛": (120.3826, 36.0671),
+            "烟台": (121.4479, 37.4638),
+            "潍坊": (119.1618, 36.7069),
+            "郑州": (113.6254, 34.7466),
+            "武汉": (114.3054, 30.5928),
+            "长沙": (112.9388, 28.2282),
+            "南昌": (115.8582, 28.6829),
+            "福州": (119.2965, 26.0745),
+            "厦门": (118.0894, 24.4798),
+            "泉州": (118.6759, 24.8741),
+            "成都": (104.0665, 30.5728),
+            "重庆": (106.5516, 29.5630),
+            "西安": (108.9398, 34.3416),
+            "天津": (117.2000, 39.1333),
+            "石家庄": (114.5149, 38.0428),
+            "唐山": (118.1802, 39.6309),
+            "太原": (112.5492, 37.8706),
+            "呼和浩特": (111.7492, 40.8426),
+            "沈阳": (123.4315, 41.8057),
+            "大连": (121.6147, 38.9140),
+            "长春": (125.3235, 43.8171),
+            "哈尔滨": (126.6424, 45.7567),
+            "南宁": (108.3669, 22.8170),
+            "桂林": (110.2900, 25.2736),
+            "海口": (110.1983, 20.0440),
+            "三亚": (109.5083, 18.2479),
+            "贵阳": (106.6302, 26.6470),
+            "昆明": (102.8329, 24.8801),
+            "拉萨": (91.1175, 29.6475),
+            "兰州": (103.8343, 36.0611),
+            "西宁": (101.7782, 36.6171),
+            "银川": (106.2309, 38.4872),
+            "乌鲁木齐": (87.6168, 43.8256),
+        }
+        return coords.get(normalized, (None, None))
+
+    @staticmethod
+    def _normalize_city_name(city: str) -> str:
+        text = str(city or "").strip()
+        suffixes = ["特别行政区", "自治州", "地区", "盟", "市"]
+        for suffix in suffixes:
+            if text.endswith(suffix) and len(text) > len(suffix):
+                return text[: -len(suffix)]
+        return text
+
+    def _build_news_by_industry(self, industry_by_code: dict[str, str]) -> dict[str, list[dict]]:
+        grouped: dict[str, dict[int, dict]] = defaultdict(dict)
+        stock_codes = self.news_repository.list_stock_codes_with_news()
+        for code in stock_codes[:160]:
+            normalized = self._normalize_stock_code(code)
+            industry = industry_by_code.get(normalized)
+            if not industry or industry == "未知":
+                continue
+            for article in self.news_repository.query_news_by_stock(normalized, limit=8):
+                article_id = article.get("id")
+                if not article_id:
+                    continue
+                grouped[industry][int(article_id)] = {
+                    "id": article_id,
+                    "stock_code": normalized,
+                    "title": article.get("title", ""),
+                    "source": article.get("source", ""),
+                    "published_at": article.get("published_at", ""),
+                    "sentiment": article.get("sentiment") or "中性",
+                    "event_type": article.get("event_type") or "其他",
+                    "content": (article.get("content") or article.get("summary") or "")[:240],
+                    "url": article.get("url", ""),
+                }
+        if not grouped:
+            for article in self.news_repository.query_all_news(limit=240):
+                code = self._normalize_stock_code(article.get("stock_code"))
+                industry = industry_by_code.get(code)
+                if not code or not industry or industry == "未知":
+                    continue
+                article_id = article.get("id")
+                grouped[industry][int(article_id)] = {
+                    "id": article_id,
+                    "stock_code": code,
+                    "title": article.get("title", ""),
+                    "source": article.get("source", ""),
+                    "published_at": article.get("published_at", ""),
+                    "sentiment": article.get("sentiment") or "中性",
+                    "event_type": article.get("event_type") or "其他",
+                    "content": (article.get("content") or article.get("summary") or "")[:240],
+                    "url": article.get("url", ""),
+                }
+        result: dict[str, list[dict]] = {}
+        for industry, articles in grouped.items():
+            result[industry] = sorted(
+                articles.values(),
+                key=lambda item: str(item.get("published_at") or ""),
+                reverse=True,
+            )[:24]
+        return result
+
+    @staticmethod
+    def _market_cap_bucket(value: float) -> str:
+        if value >= 1_000_000_000_000:
+            return "gte_10000y"
+        if value >= 300_000_000_000:
+            return "3000y_10000y"
+        if value >= 100_000_000_000:
+            return "1000y_3000y"
+        if value >= 50_000_000_000:
+            return "500y_1000y"
+        return "lt_500y"
+
     @staticmethod
     def _write_section(filename: str, payload: dict) -> dict:
         path = APP_DATA_DIR / filename
         path.write_text(json.dumps(payload, ensure_ascii=False, default=str), encoding="utf-8")
         return {"available": True, "path": f"./data/{filename}", "message": ""}
+
+    @staticmethod
+    def _copy_static_assets() -> None:
+        china_map = REFERENCE_DATA_DIR / "china_echarts_map.js"
+        if china_map.exists():
+            shutil.copyfile(china_map, APP_DATA_DIR / "china_echarts_map.js")
 
     @staticmethod
     def _missing(message: str) -> dict:
@@ -623,6 +1118,9 @@ class UnifiedFrontendService:
         try:
             if value in ("", None):
                 return None
-            return float(value)
+            result = float(value)
+            if math.isnan(result) or math.isinf(result):
+                return None
+            return result
         except Exception:
             return None

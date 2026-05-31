@@ -19,6 +19,9 @@ source/*.db
 
 # runtime market cache / generated data
 data/market_overview/*.json
+data/reference/china_admin_locations.json
+data/reference/stock_basic_info.csv
+data/reference/stock_basic_info.json
 
 # local runtime state
 data/shared_state/*
@@ -28,7 +31,9 @@ data/shared_state/*
 outputs/*.html
 outputs/html/*.html
 outputs/market/*.html
+outputs/app/data/*.csv
 outputs/app/data/*.json
+outputs/app/data/*.js
 outputs/app/*.html
 !outputs/.gitkeep
 !outputs/app/.gitkeep

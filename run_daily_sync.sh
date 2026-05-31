@@ -8,6 +8,7 @@ PYTHON_BIN="${PYTHON_BIN:-$DEFAULT_PYTHON_BIN}"
 TARGET_DATE="${TARGET_DATE:-}"
 SYNC_NEWS="${SYNC_NEWS:-0}"
 BUILD_GRAPHS="${BUILD_GRAPHS:-0}"
+SYNC_STOCK_LOCATIONS="${SYNC_STOCK_LOCATIONS:-0}"
 SYNC_MARKET_OVERVIEW="${SYNC_MARKET_OVERVIEW:-1}"
 SYNC_DRAGON_TIGER="${SYNC_DRAGON_TIGER:-1}"
 MARKET_OVERVIEW_YEAR="${MARKET_OVERVIEW_YEAR:-}"
@@ -77,6 +78,18 @@ fi
 if [[ "$BUILD_GRAPHS" == "1" ]]; then
   echo "[stockgraph] building graph snapshots"
   run_task "build_graph_snapshots" "$PYTHON_BIN" scripts/build_graph_snapshots.py --persist || true
+fi
+
+if [[ "$SYNC_STOCK_LOCATIONS" == "1" ]]; then
+  echo "[stockgraph] syncing stock locations"
+  LOCATION_ARGS=(--limit "${STOCK_LOCATION_LIMIT:-100}" --sleep "${STOCK_LOCATION_SLEEP:-1.2}")
+  if [[ -n "${STOCK_LOCATION_CODES:-}" ]]; then
+    LOCATION_ARGS+=(--codes "$STOCK_LOCATION_CODES")
+  fi
+  if [[ "${STOCK_LOCATION_FORCE:-0}" == "1" ]]; then
+    LOCATION_ARGS+=(--force)
+  fi
+  run_task "sync_stock_locations" "$PYTHON_BIN" scripts/sync_stock_locations.py "${LOCATION_ARGS[@]}" || true
 fi
 
 if [[ "$SYNC_MARKET_OVERVIEW" == "1" ]]; then
