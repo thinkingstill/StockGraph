@@ -177,6 +177,13 @@ class StockLocationService:
         basic_info = self._load_stock_basic_info()
         existing_mapping = self._load_json_dict(LOCATION_MAPPING_PATH)
         profile_cache = self._load_json_dict(PROFILE_CACHE_PATH)
+        fallback_regions: dict[str, str] | None = None
+
+        def fallback_mapping_for(code: str) -> dict | None:
+            nonlocal fallback_regions
+            if fallback_regions is None:
+                fallback_regions = self._load_fallback_regions()
+            return self._fallback_mapping(code, resolver, basic_info, fallback_regions)
 
         target_codes = codes or basic_info["股票代码"].astype(str).str[-6:].str.zfill(6).tolist()
         target_codes = [self._normalize_code(code) for code in target_codes if self._normalize_code(code)]
@@ -219,20 +226,32 @@ class StockLocationService:
                 profile = self._fetch_cninfo_profile(code)
                 if not profile:
                     profile_cache[code] = {"status": "empty", "updated_at": self._now()}
-                    failed += 1
+                    item = fallback_mapping_for(code)
+                    if item:
+                        mapping[code] = item
+                    else:
+                        failed += 1
                 else:
                     profile_cache[code] = {"status": "ok", "profile": profile, "updated_at": self._now()}
                     item = self._mapping_from_profile(code, profile, resolver, basic_info)
                     if item:
                         mapping[code] = item
                     else:
-                        failed += 1
+                        fallback = fallback_mapping_for(code)
+                        if fallback:
+                            mapping[code] = fallback
+                        else:
+                            failed += 1
                 fetched += 1
             except Exception as exc:
                 logger.warning("股票所在地抓取失败 code=%s error=%s", code, exc)
                 profile_cache[code] = {"status": "error", "error": str(exc)[:300], "updated_at": self._now()}
+                item = fallback_mapping_for(code)
+                if item:
+                    mapping[code] = item
+                else:
+                    failed += 1
                 fetched += 1
-                failed += 1
 
             if fetched % max(flush_every, 1) == 0:
                 self._write_json(PROFILE_CACHE_PATH, profile_cache)
@@ -251,6 +270,57 @@ class StockLocationService:
             "rebuilt_from_cache": rebuilt_from_cache,
             "mapping_path": str(LOCATION_MAPPING_PATH),
             "cache_path": str(PROFILE_CACHE_PATH),
+        }
+
+    def _fallback_mapping(
+        self,
+        code: str,
+        resolver: ChinaAdminResolver,
+        basic_info: pd.DataFrame,
+        fallback_regions: dict[str, str],
+    ) -> dict | None:
+        basic_row = basic_info[basic_info["股票代码"] == code]
+        if basic_row.empty:
+            return None
+
+        row = basic_row.iloc[0]
+        stock_name = str(row.get("股票简称") or "").strip()
+        exchange = str(row.get("交易所") or "")
+
+        region = fallback_regions.get(code)
+        if region:
+            resolved = resolver.resolve(region)
+            if resolved:
+                return {
+                    "province": resolved.province,
+                    "city": resolved.city,
+                    "district": resolved.district,
+                    "lng": resolved.lng,
+                    "lat": resolved.lat,
+                    "adcode": resolved.adcode,
+                    "city_adcode": resolved.city_adcode,
+                    "province_adcode": resolved.province_adcode,
+                    "stock_name": stock_name,
+                    "registered_address": "",
+                    "office_address": "",
+                    "source": "akshare.stock_info_bj_name_code",
+                    "quality": "province_fallback",
+                    "updated_at": self._now(),
+                }
+
+        exchange_location = self._exchange_location(code, exchange)
+        if not exchange_location:
+            return None
+        return {
+            **exchange_location,
+            "district": "",
+            "adcode": exchange_location["city_adcode"],
+            "stock_name": stock_name,
+            "registered_address": "",
+            "office_address": "",
+            "source": "exchange_fallback",
+            "quality": "exchange_fallback",
+            "updated_at": self._now(),
         }
 
     def _mapping_from_profile(self, code: str, profile: dict, resolver: ChinaAdminResolver, basic_info: pd.DataFrame) -> dict | None:
@@ -275,8 +345,29 @@ class StockLocationService:
             "registered_address": registered_address,
             "office_address": office_address,
             "source": "akshare.stock_profile_cninfo",
+            "quality": "profile",
             "updated_at": self._now(),
         }
+
+    @staticmethod
+    def _load_fallback_regions() -> dict[str, str]:
+        try:
+            import akshare as ak
+
+            frame = ak.stock_info_bj_name_code()
+        except Exception as exc:
+            logger.warning("北交所地区备用数据获取失败: %s", exc)
+            return {}
+        if frame is None or frame.empty:
+            return {}
+
+        regions: dict[str, str] = {}
+        for row in frame.to_dict("records"):
+            code = StockLocationService._normalize_code(row.get("证券代码"))
+            region = str(row.get("地区") or "").strip()
+            if code and region:
+                regions[code] = region
+        return regions
 
     @staticmethod
     def _fetch_cninfo_profile(code: str) -> dict:
@@ -318,6 +409,38 @@ class StockLocationService:
             return payload if isinstance(payload, dict) else {}
         except Exception:
             return {}
+
+    @staticmethod
+    def _exchange_location(code: str, exchange: str) -> dict | None:
+        exchange_text = str(exchange or "")
+        if "上海" in exchange_text:
+            return {
+                "province": "上海市",
+                "city": "上海",
+                "lng": 121.4737,
+                "lat": 31.2304,
+                "city_adcode": 310000,
+                "province_adcode": 310000,
+            }
+        if "深圳" in exchange_text:
+            return {
+                "province": "广东省",
+                "city": "深圳",
+                "lng": 114.0579,
+                "lat": 22.5431,
+                "city_adcode": 440300,
+                "province_adcode": 440000,
+            }
+        if "北京" in exchange_text or code.startswith(("4", "8", "9")):
+            return {
+                "province": "北京市",
+                "city": "北京",
+                "lng": 116.4074,
+                "lat": 39.9042,
+                "city_adcode": 110000,
+                "province_adcode": 110000,
+            }
+        return None
 
     @staticmethod
     def _write_json(path: Path, payload: dict) -> None:

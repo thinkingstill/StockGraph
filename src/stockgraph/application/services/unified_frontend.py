@@ -847,6 +847,7 @@ class UnifiedFrontendService:
                 "lng": self._as_float(row.get("lng") or row.get("longitude") or row.get("经度")),
                 "lat": self._as_float(row.get("lat") or row.get("latitude") or row.get("纬度")),
                 "source": row.get("source") or row.get("来源") or "stock_location_mapping",
+                "quality": row.get("quality") or row.get("定位质量") or "mapped",
             }
         return mapping
 
@@ -862,7 +863,7 @@ class UnifiedFrontendService:
                 "city": mapped.get("city"),
                 "lng": lng,
                 "lat": lat,
-                "quality": "mapped",
+                "quality": mapped.get("quality") or "mapped",
                 "source": mapped.get("source") or "stock_location_mapping",
             }
 
