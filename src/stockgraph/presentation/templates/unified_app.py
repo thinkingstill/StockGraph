@@ -435,7 +435,10 @@ def render_unified_app() -> str:
     }
 
     function renderMarketHot(root, payload) {
-      const records = payload.records || [];
+      const dates = payload.date_list || [];
+      const recordsByDate = payload.records_by_date || {};
+      let currentDate = payload.latest_date || payload.trade_date || dates[0] || '';
+      let records = recordsByDate[currentDate] || payload.records || [];
       if (!records.length) {
         root.innerHTML = '<div class="empty">市场热度数据当前不可用</div>';
         return;
@@ -446,31 +449,42 @@ def render_unified_app() -> str:
       const defaultY = fieldEntries.find(([k]) => k === 'tweet_rank')?.[0] || fieldEntries[1]?.[0] || fieldEntries[0][0];
       const defaultZ = fieldEntries.find(([k]) => k === 'change_pct')?.[0] || fieldEntries[2]?.[0] || fieldEntries[0][0];
       const defaultSize = fieldEntries.find(([k]) => k === 'deal_rank')?.[0] || fieldEntries[3]?.[0] || fieldEntries[0][0];
-      const industries = Array.from(new Set(records.map(x => x.industry))).sort();
-      const exchanges = Array.from(new Set(records.map(x => x.exchange))).sort();
       root.innerHTML = `
         <div class="stats">
-          <div class="stat"><div class="k">交易日</div><div class="v">${escapeHtml(payload.trade_date || '-')}</div></div>
-          <div class="stat"><div class="k">热度记录</div><div class="v">${records.length}</div></div>
-          <div class="stat"><div class="k">行业数</div><div class="v" id="mh-industry-count">${industries.length}</div></div>
-          <div class="stat"><div class="k">交易所数</div><div class="v">${exchanges.length}</div></div>
+          <div class="stat"><div class="k">交易日</div><div class="v" id="mh-date-v">-</div></div>
+          <div class="stat"><div class="k">热度记录</div><div class="v" id="mh-record-count">0</div></div>
+          <div class="stat"><div class="k">行业数</div><div class="v" id="mh-industry-count">0</div></div>
+          <div class="stat"><div class="k">交易所数</div><div class="v" id="mh-exchange-count">0</div></div>
         </div>
         <div class="filters">
+          <select id="mh-date">${dates.map(d => `<option value="${escapeHtml(d)}" ${d === currentDate ? 'selected' : ''}>${escapeHtml(d)}</option>`).join('')}</select>
           <select id="mh-x">${fieldEntries.map(([k,v]) => `<option value="${k}" ${k===defaultX?'selected':''}>X轴: ${v}</option>`).join('')}</select>
           <select id="mh-y">${fieldEntries.map(([k,v]) => `<option value="${k}" ${k===defaultY?'selected':''}>Y轴: ${v}</option>`).join('')}</select>
           <select id="mh-z">${fieldEntries.map(([k,v]) => `<option value="${k}" ${k===defaultZ?'selected':''}>Z轴: ${v}</option>`).join('')}</select>
           <select id="mh-size">${fieldEntries.map(([k,v]) => `<option value="${k}" ${k===defaultSize?'selected':''}>大小: ${v}</option>`).join('')}</select>
-          <select id="mh-exchange"><option value="">全部交易所</option>${exchanges.map(x => `<option value="${escapeHtml(x)}">${escapeHtml(x)}</option>`).join('')}</select>
-          <select id="mh-industry"><option value="">全部行业</option>${industries.map(x => `<option value="${escapeHtml(x)}">${escapeHtml(x)}</option>`).join('')}</select>
+          <select id="mh-exchange"><option value="">全部交易所</option></select>
+          <select id="mh-industry"><option value="">全部行业</option></select>
           <input id="mh-keyword" placeholder="股票代码/名称/行业关键词">
           <button class="primary" id="mh-run">刷新</button>
           <button id="mh-reset">重置</button>
         </div>
         <div class="card"><div id="mh-chart" class="chart"></div></div>
         <div class="card" style="margin-top:16px;"><table><thead><tr><th>股票</th><th>行业</th><th>交易所</th><th>关注</th><th>讨论</th><th>交易</th><th>涨跌幅</th><th>成交额</th></tr></thead><tbody id="mh-table"></tbody></table></div>`;
-      document.getElementById('mh-table').innerHTML = records.slice(0, 120).map(x => `<tr><td>${escapeHtml(x.stock_name)} (${escapeHtml(x.stock_code)})</td><td>${escapeHtml(x.industry)}</td><td>${Number(x.follow_rank || 0).toFixed(1)}</td><td>${Number(x.tweet_rank || 0).toFixed(1)}</td><td>${Number(x.deal_rank || 0).toFixed(1)}</td><td class="${Number(x.change_pct || 0) >= 0 ? 'buy' : 'sell'}">${Number(x.change_pct || 0).toFixed(2)}%</td></tr>`).join('');
       const chart = echarts.init(document.getElementById('mh-chart'));
+      function fillMarketHotFilters() {
+        records = recordsByDate[currentDate] || [];
+        const industries = Array.from(new Set(records.map(x => x.industry))).sort();
+        const exchanges = Array.from(new Set(records.map(x => x.exchange))).sort();
+        document.getElementById('mh-industry').innerHTML = '<option value="">全部行业</option>' + industries.map(x => `<option value="${escapeHtml(x)}">${escapeHtml(x)}</option>`).join('');
+        document.getElementById('mh-exchange').innerHTML = '<option value="">全部交易所</option>' + exchanges.map(x => `<option value="${escapeHtml(x)}">${escapeHtml(x)}</option>`).join('');
+        document.getElementById('mh-date-v').textContent = currentDate || '-';
+        document.getElementById('mh-record-count').textContent = records.length;
+        document.getElementById('mh-exchange-count').textContent = exchanges.length;
+        document.getElementById('mh-industry-count').textContent = industries.length;
+      }
       function draw() {
+        currentDate = document.getElementById('mh-date').value;
+        records = recordsByDate[currentDate] || [];
         const xField = document.getElementById('mh-x').value;
         const yField = document.getElementById('mh-y').value;
         const zField = document.getElementById('mh-z').value;
@@ -484,8 +498,15 @@ def render_unified_app() -> str:
           const matchKeyword = !keyword || x.stock_code.toLowerCase().includes(keyword) || x.stock_name.toLowerCase().includes(keyword) || x.industry.toLowerCase().includes(keyword);
           return matchExchange && matchIndustry && matchKeyword;
         });
+        document.getElementById('mh-date-v').textContent = currentDate || '-';
+        document.getElementById('mh-record-count').textContent = filtered.length;
         document.getElementById('mh-industry-count').textContent = new Set(filtered.map(x => x.industry)).size;
+        document.getElementById('mh-exchange-count').textContent = new Set(filtered.map(x => x.exchange)).size;
         document.getElementById('mh-table').innerHTML = filtered.slice(0, 150).map(x => `<tr><td>${escapeHtml(x.stock_name)} (${escapeHtml(x.stock_code)})</td><td>${escapeHtml(x.industry)}</td><td>${escapeHtml(x.exchange)}</td><td>${Number(x.follow_rank || 0).toFixed(1)}</td><td>${Number(x.tweet_rank || 0).toFixed(1)}</td><td>${Number(x.deal_rank || 0).toFixed(1)}</td><td class="${Number(x.change_pct || 0) >= 0 ? 'buy' : 'sell'}">${Number(x.change_pct || 0).toFixed(2)}%</td><td>${Number(x.amount || 0).toFixed(0)}</td></tr>`).join('');
+        if (!filtered.length) {
+          chart.clear();
+          return;
+        }
         chart.setOption({
           tooltip: {
             formatter: p => `${escapeHtml(p.data.stock_name)} (${escapeHtml(p.data.stock_code)})<br/>行业: ${escapeHtml(p.data.industry)}<br/>交易所: ${escapeHtml(p.data.exchange)}<br/>${escapeHtml(numericFields[xField])}: ${Number(p.data.raw[xField] || 0).toFixed(2)}<br/>${escapeHtml(numericFields[yField])}: ${Number(p.data.raw[yField] || 0).toFixed(2)}<br/>${escapeHtml(numericFields[zField])}: ${Number(p.data.raw[zField] || 0).toFixed(2)}`,
@@ -510,6 +531,7 @@ def render_unified_app() -> str:
           }]
         }, true);
       }
+      document.getElementById('mh-date').addEventListener('change', () => { fillMarketHotFilters(); draw(); });
       document.getElementById('mh-run').addEventListener('click', draw);
       document.getElementById('mh-reset').addEventListener('click', () => {
         document.getElementById('mh-x').value = defaultX;
@@ -522,6 +544,7 @@ def render_unified_app() -> str:
         draw();
       });
       ['mh-x','mh-y','mh-z','mh-size','mh-exchange','mh-industry'].forEach(id => document.getElementById(id).addEventListener('change', draw));
+      fillMarketHotFilters();
       draw();
     }
 
@@ -1305,32 +1328,48 @@ def render_unified_app() -> str:
     }
 
     function renderMarketIndustry(root, payload) {
-      const records = payload.records || [];
+      const dates = payload.date_list || [];
+      const recordsByDate = payload.records_by_date || {};
+      let currentDate = payload.latest_date || payload.trade_date || dates[0] || '';
+      let records = recordsByDate[currentDate] || payload.records || [];
       if (!records.length) {
         root.innerHTML = '<div class="empty">行业强弱数据当前不可用</div>';
         return;
       }
-      const top = records.slice(0, 12);
-      const bottom = records.slice(-12);
       root.innerHTML = `
         <div class="stats">
-          <div class="stat"><div class="k">交易日</div><div class="v">${escapeHtml(payload.trade_date || '-')}</div></div>
-          <div class="stat"><div class="k">行业数</div><div class="v">${records.length}</div></div>
+          <div class="stat"><div class="k">交易日</div><div class="v" id="mi-date-v">-</div></div>
+          <div class="stat"><div class="k">行业数</div><div class="v" id="mi-count-v">0</div></div>
+        </div>
+        <div class="filters">
+          <select id="mi-date">${dates.map(d => `<option value="${escapeHtml(d)}" ${d === currentDate ? 'selected' : ''}>${escapeHtml(d)}</option>`).join('')}</select>
         </div>
         <div class="grid">
           <div class="card split-2"><div id="mi-top" class="chart" style="min-height:360px;"></div></div>
           <div class="card split-2"><div id="mi-bottom" class="chart" style="min-height:360px;"></div></div>
           <div class="card"><table><thead><tr><th>行业</th><th>股票数</th><th>平均涨跌幅</th><th>总涨跌幅</th></tr></thead><tbody id="mi-table"></tbody></table></div>
         </div>`;
-      document.getElementById('mi-table').innerHTML = records.map(x => `<tr><td>${escapeHtml(x.industry)}</td><td>${x.stock_count}</td><td class="${Number(x.avg_change_pct) >= 0 ? 'buy' : 'sell'}">${Number(x.avg_change_pct).toFixed(2)}%</td><td class="${Number(x.total_change_pct) >= 0 ? 'buy' : 'sell'}">${Number(x.total_change_pct).toFixed(2)}%</td></tr>`).join('');
-      echarts.init(document.getElementById('mi-top')).setOption({
-        xAxis: { type: 'value' }, yAxis: { type: 'category', data: top.map(x => x.industry) },
-        series: [{ type: 'bar', data: top.map(x => x.total_change_pct), itemStyle: { color: '#0f766e' } }]
-      });
-      echarts.init(document.getElementById('mi-bottom')).setOption({
-        xAxis: { type: 'value' }, yAxis: { type: 'category', data: bottom.map(x => x.industry) },
-        series: [{ type: 'bar', data: bottom.map(x => x.total_change_pct), itemStyle: { color: '#b45309' } }]
-      });
+      const topChart = echarts.init(document.getElementById('mi-top'));
+      const bottomChart = echarts.init(document.getElementById('mi-bottom'));
+      function draw() {
+        currentDate = document.getElementById('mi-date').value;
+        records = recordsByDate[currentDate] || [];
+        const top = records.slice(0, 12);
+        const bottom = records.slice(-12);
+        document.getElementById('mi-date-v').textContent = currentDate || '-';
+        document.getElementById('mi-count-v').textContent = records.length;
+        document.getElementById('mi-table').innerHTML = records.map(x => `<tr><td>${escapeHtml(x.industry)}</td><td>${x.stock_count}</td><td class="${Number(x.avg_change_pct) >= 0 ? 'buy' : 'sell'}">${Number(x.avg_change_pct).toFixed(2)}%</td><td class="${Number(x.total_change_pct) >= 0 ? 'buy' : 'sell'}">${Number(x.total_change_pct).toFixed(2)}%</td></tr>`).join('');
+        topChart.setOption({
+          xAxis: { type: 'value' }, yAxis: { type: 'category', data: top.map(x => x.industry) },
+          series: [{ type: 'bar', data: top.map(x => x.total_change_pct), itemStyle: { color: '#0f766e' } }]
+        }, true);
+        bottomChart.setOption({
+          xAxis: { type: 'value' }, yAxis: { type: 'category', data: bottom.map(x => x.industry) },
+          series: [{ type: 'bar', data: bottom.map(x => x.total_change_pct), itemStyle: { color: '#b45309' } }]
+        }, true);
+      }
+      document.getElementById('mi-date').addEventListener('change', draw);
+      draw();
     }
 
     function renderStockNews(root, payload) {

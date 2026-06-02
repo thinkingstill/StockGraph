@@ -7,7 +7,14 @@ from collections import defaultdict
 from datetime import datetime
 from pathlib import Path
 
-from stockgraph.core import APP_DATA_DIR, APP_OUTPUT_DIR, MARKET_DATA_DIR, REFERENCE_DATA_DIR, ensure_runtime_dirs
+from stockgraph.core import (
+    APP_DATA_DIR,
+    APP_OUTPUT_DIR,
+    DRAGON_TIGER_OUTPUT_DIR,
+    MARKET_DATA_DIR,
+    REFERENCE_DATA_DIR,
+    ensure_runtime_dirs,
+)
 from stockgraph.domain.dragon_tiger import FAMOUS_TRADERS
 from stockgraph.domain.market_overview import get_exchange
 from stockgraph.infrastructure.db import DragonTigerRepository
@@ -51,70 +58,97 @@ class UnifiedFrontendService:
         return [app_path, manifest_path]
 
     def _build_dragon_query_data(self) -> dict:
-        dates = self.dragon_tiger_repository.list_trade_dates()
+        operations = self._load_dragon_tiger_operations()
+        dates = sorted({row["date"] for row in operations}, reverse=True)
         if not dates:
             return self._missing("龙虎榜查询暂无数据")
+        query_dataset: dict[str, list[dict]] = {}
+        for row in operations:
+            record = {
+                "date": row["date"],
+                "stockCode": row["stock_code"],
+                "stockName": row["stock_name"],
+                "seatName": row["seat_name"],
+                "direction": row["direction"],
+                "amount": row["amount"],
+                "netAmount": row["net_amount"],
+                "seatType": row.get("seat_type"),
+                "alias": row.get("trader_alias"),
+            }
+            query_dataset.setdefault(row["date"], []).append(record)
         payload = {
             "latest_date": dates[0],
             "date_list": dates,
-            "all_operations": self.dragon_tiger_repository.export_query_dataset(),
-            "all_active_stocks": {date: self.dragon_tiger_repository.aggregate_active_stocks(date) for date in dates},
-            "all_active_seats": {date: self.dragon_tiger_repository.aggregate_active_seats(date) for date in dates},
+            "all_operations": query_dataset,
+            "all_active_stocks": {date: self._aggregate_dragon_active_stocks(query_dataset.get(date, [])) for date in dates},
+            "all_active_seats": {date: self._aggregate_dragon_active_seats(query_dataset.get(date, [])) for date in dates},
             "all_famous_traders": {date: self.dragon_tiger_repository.aggregate_famous_traders(date) for date in dates},
         }
         return self._write_section("dragon_tiger_query.json", payload)
 
     def _build_dragon_graph_data(self) -> dict:
-        records = self.dragon_tiger_repository.export_operations()
+        records = [
+            row
+            for row in self._load_dragon_tiger_operations()
+            if row["seat_name"] not in {"自然人", "中小投资者", "其他自然人", "机构专用"}
+        ]
         if not records:
             return self._missing("龙虎榜关系网暂无数据")
         return self._write_section("dragon_tiger_graph.json", {"records": records, "famous_traders": FAMOUS_TRADERS})
 
     def _build_market_hot_data(self) -> dict:
-        latest = self._latest_json("hot_daily_*.json")
-        if latest is None:
+        hot_files = sorted(MARKET_DATA_DIR.glob("hot_daily_*.json"), reverse=True)
+        if not hot_files:
             return self._missing("市场热度数据未生成")
-        records = self._read_json_list(latest)
-        if not records:
-            return self._missing("市场热度数据为空")
-        daily_latest = self._latest_json("stock_daily_*.json")
-        daily_records = self._read_json_list(daily_latest) if daily_latest else []
-        daily_lookup = {}
-        for row in daily_records:
-            code = str(row.get("代码", ""))[-6:].zfill(6)
-            if code:
-                daily_lookup[code] = row
-        deduped = {}
-        for row in records:
-            industry = str(row.get("行业", "未知")).strip()
-            if industry in {"未知", "缺失", ""}:
-                continue
-            code = str(row.get("股票代码", ""))[-6:].zfill(6)
-            if not code:
-                continue
-            daily = daily_lookup.get(code, {})
-            deduped[code] = {
-                "stock_code": code,
-                "stock_name": row.get("股票简称", ""),
-                "industry": industry,
-                "exchange": get_exchange(code),
-                "latest_price": self._as_float(daily.get("最新价", row.get("最新价"))),
-                "change_pct": self._as_float(daily.get("涨跌幅", row.get("涨跌幅"))),
-                "change_amount": self._as_float(daily.get("涨跌额")),
-                "buy_price": self._as_float(daily.get("买入")),
-                "sell_price": self._as_float(daily.get("卖出")),
-                "prev_close": self._as_float(daily.get("昨收")),
-                "open_price": self._as_float(daily.get("今开")),
-                "high_price": self._as_float(daily.get("最高")),
-                "low_price": self._as_float(daily.get("最低")),
-                "volume": self._as_float(daily.get("成交量")),
-                "amount": self._as_float(daily.get("成交额")),
-                "follow_rank": self._as_float(row.get("关注")),
-                "tweet_rank": self._as_float(row.get("讨论")),
-                "deal_rank": self._as_float(row.get("交易")),
-            }
+        date_payloads = {}
+        date_list = []
+        for hot_path in hot_files:
+            trade_date = self._extract_trade_date(hot_path.name)
+            daily_path = MARKET_DATA_DIR / f"stock_daily_{trade_date}.json"
+            records = self._read_json_list(hot_path)
+            daily_records = self._read_json_list(daily_path) if daily_path.exists() else []
+            daily_lookup = {}
+            for row in daily_records:
+                code = self._normalize_stock_code(row.get("代码"))
+                if code:
+                    daily_lookup[code] = row
+            deduped = {}
+            for row in records:
+                industry = str(row.get("行业", "未知")).strip()
+                if industry in {"未知", "缺失", ""}:
+                    continue
+                code = self._normalize_stock_code(row.get("股票代码"))
+                if not code:
+                    continue
+                daily = daily_lookup.get(code, {})
+                deduped[code] = {
+                    "stock_code": code,
+                    "stock_name": row.get("股票简称", ""),
+                    "industry": industry,
+                    "exchange": get_exchange(code),
+                    "latest_price": self._as_float(daily.get("最新价", row.get("最新价"))),
+                    "change_pct": self._as_float(daily.get("涨跌幅", row.get("涨跌幅"))),
+                    "change_amount": self._as_float(daily.get("涨跌额")),
+                    "buy_price": self._as_float(daily.get("买入")),
+                    "sell_price": self._as_float(daily.get("卖出")),
+                    "prev_close": self._as_float(daily.get("昨收")),
+                    "open_price": self._as_float(daily.get("今开")),
+                    "high_price": self._as_float(daily.get("最高")),
+                    "low_price": self._as_float(daily.get("最低")),
+                    "volume": self._as_float(daily.get("成交量")),
+                    "amount": self._as_float(daily.get("成交额")),
+                    "follow_rank": self._as_float(row.get("关注")),
+                    "tweet_rank": self._as_float(row.get("讨论")),
+                    "deal_rank": self._as_float(row.get("交易")),
+                }
+            if deduped:
+                formatted_date = self._format_trade_date(trade_date)
+                date_payloads[formatted_date] = list(deduped.values())
+                date_list.append(formatted_date)
         payload = {
-            "trade_date": self._extract_trade_date(latest.name),
+            "trade_date": date_list[0] if date_list else "",
+            "latest_date": date_list[0] if date_list else "",
+            "date_list": date_list,
             "numeric_fields": {
                 "follow_rank": "关注热度",
                 "tweet_rank": "讨论热度",
@@ -127,41 +161,53 @@ class UnifiedFrontendService:
                 "high_price": "最高价",
                 "low_price": "最低价",
             },
-            "records": list(deduped.values()),
+            "records": date_payloads.get(date_list[0], []) if date_list else [],
+            "records_by_date": date_payloads,
         }
-        if not payload["records"]:
+        if not date_payloads:
             return self._missing("市场热度有效数据为空")
         return self._write_section("market_hot.json", payload)
 
     def _build_market_industry_data(self) -> dict:
-        latest = self._latest_json("stock_daily_*.json")
-        if latest is None:
+        stock_files = sorted(MARKET_DATA_DIR.glob("stock_daily_*.json"), reverse=True)
+        if not stock_files:
             return self._missing("行业强弱数据未生成")
-        records = self._read_json_list(latest)
-        if not records:
-            return self._missing("行业强弱数据为空")
-        aggregate: dict[str, dict] = {}
-        for row in records:
-            industry = str(row.get("行业", "未知"))
-            if industry == "未知":
+        records_by_date = {}
+        date_list = []
+        for stock_path in stock_files:
+            records = self._read_json_list(stock_path)
+            if not records:
                 continue
-            item = aggregate.setdefault(industry, {"industry": industry, "stock_count": 0, "total_change_pct": 0.0})
-            item["stock_count"] += 1
-            item["total_change_pct"] += float(row.get("涨跌幅", 0) or 0)
-        if not aggregate:
+            aggregate: dict[str, dict] = {}
+            for row in records:
+                industry = str(row.get("行业", "未知"))
+                if industry == "未知":
+                    continue
+                item = aggregate.setdefault(industry, {"industry": industry, "stock_count": 0, "total_change_pct": 0.0})
+                item["stock_count"] += 1
+                item["total_change_pct"] += float(row.get("涨跌幅", 0) or 0)
+            if not aggregate:
+                continue
+            grouped = []
+            for item in aggregate.values():
+                grouped.append({
+                    "industry": item["industry"],
+                    "stock_count": item["stock_count"],
+                    "total_change_pct": round(item["total_change_pct"], 4),
+                    "avg_change_pct": round(item["total_change_pct"] / item["stock_count"], 4) if item["stock_count"] else 0.0,
+                })
+            grouped.sort(key=lambda x: x["total_change_pct"], reverse=True)
+            trade_date = self._format_trade_date(self._extract_trade_date(stock_path.name))
+            records_by_date[trade_date] = grouped
+            date_list.append(trade_date)
+        if not records_by_date:
             return self._missing("行业强弱有效数据为空")
-        grouped = []
-        for item in aggregate.values():
-            grouped.append({
-                "industry": item["industry"],
-                "stock_count": item["stock_count"],
-                "total_change_pct": round(item["total_change_pct"], 4),
-                "avg_change_pct": round(item["total_change_pct"] / item["stock_count"], 4) if item["stock_count"] else 0.0,
-            })
-        grouped.sort(key=lambda x: x["total_change_pct"], reverse=True)
         payload = {
-            "trade_date": self._extract_trade_date(latest.name),
-            "records": grouped,
+            "trade_date": date_list[0],
+            "latest_date": date_list[0],
+            "date_list": date_list,
+            "records": records_by_date[date_list[0]],
+            "records_by_date": records_by_date,
         }
         return self._write_section("market_industry.json", payload)
 
@@ -1025,6 +1071,111 @@ class UnifiedFrontendService:
         if value >= 50_000_000_000:
             return "500y_1000y"
         return "lt_500y"
+
+    def _load_dragon_tiger_operations(self) -> list[dict]:
+        rows = self.dragon_tiger_repository.list_operations()
+        merged: dict[tuple, dict] = {}
+
+        def add(row: dict) -> None:
+            date = str(row.get("date") or "")
+            stock_code = self._normalize_stock_code(row.get("stock_code") or row.get("stockCode"))
+            stock_name = str(row.get("stock_name") or row.get("stockName") or "")
+            seat_name = str(row.get("seat_name") or row.get("seatName") or "")
+            direction = str(row.get("direction") or "")
+            amount = self._as_float(row.get("amount")) or 0.0
+            if not date or not stock_code or not seat_name or not direction:
+                return
+            normalized = {
+                "date": date,
+                "stock_code": stock_code,
+                "stock_name": stock_name,
+                "seat_name": seat_name,
+                "direction": direction,
+                "amount": amount,
+                "net_amount": amount if direction == "买" else -amount,
+                "seat_type": row.get("seat_type") or row.get("seatType"),
+                "trader_alias": row.get("trader_alias") or row.get("traderAlias"),
+            }
+            key = (date, stock_code, stock_name, seat_name, direction, round(amount, 4))
+            merged[key] = normalized
+
+        for row in rows:
+            add(row)
+
+        for path in sorted(DRAGON_TIGER_OUTPUT_DIR.glob("dragon_tiger_analysis_*.json"), reverse=True):
+            try:
+                payload = json.loads(path.read_text(encoding="utf-8"))
+            except Exception:
+                continue
+            if not isinstance(payload, dict) or payload.get("schemaVersion") != "dragon_tiger_analysis.v1":
+                continue
+            for row in payload.get("operations") or []:
+                if isinstance(row, dict):
+                    add(row)
+
+        return sorted(merged.values(), key=lambda item: (item["date"], item["amount"]), reverse=True)
+
+    @staticmethod
+    def _aggregate_dragon_active_stocks(records: list[dict], limit: int = 20) -> list[dict]:
+        grouped: dict[str, dict] = {}
+        for row in records:
+            key = row["stockCode"]
+            item = grouped.setdefault(
+                key,
+                {"code": key, "name": row["stockName"], "seat_names": set(), "buy": 0.0, "sell": 0.0},
+            )
+            item["seat_names"].add(row["seatName"])
+            if row["direction"] == "买":
+                item["buy"] += float(row.get("amount") or 0)
+            elif row["direction"] == "卖":
+                item["sell"] += float(row.get("amount") or 0)
+        result = []
+        for item in grouped.values():
+            result.append({
+                "code": item["code"],
+                "name": item["name"],
+                "seatCount": len(item["seat_names"]),
+                "buy": round(item["buy"], 2),
+                "sell": round(item["sell"], 2),
+                "net": round(item["buy"] - item["sell"], 2),
+            })
+        return sorted(result, key=lambda item: (item["seatCount"], item["buy"]), reverse=True)[:limit]
+
+    @staticmethod
+    def _aggregate_dragon_active_seats(records: list[dict], limit: int = 20) -> list[dict]:
+        grouped: dict[str, dict] = {}
+        for row in records:
+            key = row["seatName"]
+            item = grouped.setdefault(
+                key,
+                {
+                    "name": key,
+                    "type": row.get("seatType"),
+                    "alias": row.get("alias"),
+                    "count": 0,
+                    "buy": 0.0,
+                    "sell": 0.0,
+                },
+            )
+            item["count"] += 1
+            if row.get("alias"):
+                item["alias"] = row.get("alias")
+            if row["direction"] == "买":
+                item["buy"] += float(row.get("amount") or 0)
+            elif row["direction"] == "卖":
+                item["sell"] += float(row.get("amount") or 0)
+        result = []
+        for item in grouped.values():
+            result.append({
+                "name": item["name"],
+                "type": item["type"],
+                "alias": item["alias"],
+                "count": item["count"],
+                "buy": round(item["buy"], 2),
+                "sell": round(item["sell"], 2),
+                "net": round(item["buy"] - item["sell"], 2),
+            })
+        return sorted(result, key=lambda item: (item["count"], item["buy"]), reverse=True)[:limit]
 
     @staticmethod
     def _write_section(filename: str, payload: dict) -> dict:
