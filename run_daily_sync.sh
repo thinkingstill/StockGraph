@@ -12,6 +12,9 @@ SYNC_STOCK_LOCATIONS="${SYNC_STOCK_LOCATIONS:-0}"
 SYNC_MARKET_OVERVIEW="${SYNC_MARKET_OVERVIEW:-1}"
 SYNC_DRAGON_TIGER="${SYNC_DRAGON_TIGER:-1}"
 MARKET_OVERVIEW_YEAR="${MARKET_OVERVIEW_YEAR:-}"
+ANALYZE_DRAGON_TIGER="${ANALYZE_DRAGON_TIGER:-0}"
+DRAGON_TIGER_ANALYSIS_START_DATE="${DRAGON_TIGER_ANALYSIS_START_DATE:-$TARGET_DATE}"
+DRAGON_TIGER_ANALYSIS_END_DATE="${DRAGON_TIGER_ANALYSIS_END_DATE:-$TARGET_DATE}"
 
 if [[ "$PYTHON_BIN" == */* ]]; then
   RESOLVED_PYTHON_BIN="$PYTHON_BIN"
@@ -62,6 +65,21 @@ fi
 
 echo "[stockgraph] regenerating dashboards"
 run_task "generate_dashboards" "$PYTHON_BIN" scripts/generate_dashboards.py || true
+
+if [[ "$ANALYZE_DRAGON_TIGER" == "1" ]]; then
+  echo "[stockgraph] exporting dragon tiger analysis"
+  ANALYSIS_ARGS=()
+  if [[ -n "$DRAGON_TIGER_ANALYSIS_START_DATE" ]]; then
+    ANALYSIS_ARGS+=(--start-date "$DRAGON_TIGER_ANALYSIS_START_DATE")
+  fi
+  if [[ -n "$DRAGON_TIGER_ANALYSIS_END_DATE" ]]; then
+    ANALYSIS_ARGS+=(--end-date "$DRAGON_TIGER_ANALYSIS_END_DATE")
+  fi
+  if [[ "${DRAGON_TIGER_ANALYSIS_PERSIST_GRAPHS:-0}" == "1" ]]; then
+    ANALYSIS_ARGS+=(--persist-graphs)
+  fi
+  run_task "analyze_dragon_tiger" "$PYTHON_BIN" scripts/analyze_dragon_tiger.py "${ANALYSIS_ARGS[@]}" || true
+fi
 
 if [[ "$SYNC_NEWS" == "1" ]]; then
   echo "[stockgraph] syncing news"

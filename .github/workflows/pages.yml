@@ -4,23 +4,36 @@ on:
   workflow_dispatch:
     inputs:
       target_date:
-        description: 可选，指定同步日期（YYYYMMDD 或 YYYY-MM-DD）
+        description: 可选，指定单日例行同步日期（YYYYMMDD 或 YYYY-MM-DD）；留空则取北京时间前一天
         required: false
         type: string
+      backfill_start_date:
+        description: 可选，历史回填开始日期（YYYYMMDD 或 YYYY-MM-DD）；填写后需同时填写结束日期
+        required: false
+        type: string
+      backfill_end_date:
+        description: 可选，历史回填结束日期（YYYYMMDD 或 YYYY-MM-DD）
+        required: false
+        type: string
+      backfill_areas:
+        description: 回填功能区：all 或 dragon_tiger,market_overview,graphs,stock_locations
+        required: false
+        type: string
+        default: all
+      force_run:
+        description: 忽略 A 股交易日历，强制运行目标日期/区间
+        required: false
+        type: boolean
+        default: false
       market_overview_year:
         description: 可选，额外生成年度行业强弱榜单
         required: false
         type: string
-      sync_news:
-        description: 是否同步新闻
-        required: false
-        type: boolean
-        default: false
       build_graphs:
         description: 是否构建图快照
         required: false
         type: boolean
-        default: false
+        default: true
       sync_stock_locations:
         description: 是否增量同步上市公司所在地（会访问巨潮/akshare，默认关闭）
         required: false
@@ -40,10 +53,10 @@ on:
     branches:
       - main
   schedule:
-    - cron: '0 10 * * 1-5'
+    - cron: '30 0 * * *'
 
 permissions:
-  contents: read
+  contents: write
   pages: write
   id-token: write
 
@@ -85,25 +98,32 @@ jobs:
   build-pages:
     if: github.event_name != 'push'
     runs-on: ubuntu-latest
+    outputs:
+      should_deploy: ${{ steps.sync.outputs.should_deploy }}
     env:
       PYTHON_BIN: python
       TARGET_DATE: ${{ inputs.target_date || '' }}
+      BACKFILL_START_DATE: ${{ inputs.backfill_start_date || '' }}
+      BACKFILL_END_DATE: ${{ inputs.backfill_end_date || '' }}
+      BACKFILL_AREAS: ${{ inputs.backfill_areas || 'all' }}
+      FORCE_RUN: ${{ inputs.force_run && '1' || '0' }}
       MARKET_OVERVIEW_YEAR: ${{ inputs.market_overview_year || '' }}
-      SYNC_NEWS: ${{ inputs.sync_news && '1' || '0' }}
-      BUILD_GRAPHS: ${{ inputs.build_graphs && '1' || '0' }}
+      SYNC_NEWS: '0'
+      BUILD_GRAPHS: ${{ inputs.build_graphs == false && '0' || '1' }}
       SYNC_STOCK_LOCATIONS: ${{ inputs.sync_stock_locations && '1' || '0' }}
       SYNC_MARKET_OVERVIEW: '1'
       SYNC_DRAGON_TIGER: '1'
+      ANALYZE_DRAGON_TIGER: '1'
       STOCKGRAPH_HOT_MAX_WORKERS: '1'
       STOCKGRAPH_HISTORY_MAX_WORKERS: '2'
       STOCKGRAPH_REQUEST_DELAY_SECONDS: '0.8'
-      NEWS_LIMIT: '30'
-      NEWS_STOCK_LIMIT: '5'
       STOCK_LOCATION_LIMIT: ${{ inputs.stock_location_limit || '100' }}
       STOCK_LOCATION_SLEEP: ${{ inputs.stock_location_sleep || '1.5' }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
 
       - name: Setup Python
         uses: actions/setup-python@v5
@@ -118,18 +138,73 @@ jobs:
       - name: Configure GitHub Pages
         uses: actions/configure-pages@v5
 
-      - name: Build site outputs
+      - name: Run routine or backfill sync
+        id: sync
+        shell: bash
         run: |
-          bash run_daily_sync.sh
+          set -euo pipefail
+          FORCE_ARGS=()
+          if [[ "$FORCE_RUN" == "1" ]]; then
+            FORCE_ARGS+=(--force)
+          fi
+          if [[ -n "$BACKFILL_START_DATE" || -n "$BACKFILL_END_DATE" ]]; then
+            if [[ -z "$BACKFILL_START_DATE" || -z "$BACKFILL_END_DATE" ]]; then
+              echo "backfill_start_date and backfill_end_date must be provided together" >&2
+              exit 1
+            fi
+            python scripts/backfill_history.py \
+              --start-date "$BACKFILL_START_DATE" \
+              --end-date "$BACKFILL_END_DATE" \
+              --areas "$BACKFILL_AREAS" \
+              "${FORCE_ARGS[@]}"
+          else
+            TARGET_ARGS=()
+            if [[ -n "$TARGET_DATE" ]]; then
+              TARGET_ARGS+=(--target-date "$TARGET_DATE")
+            fi
+            python scripts/routine_daily_sync.py "${TARGET_ARGS[@]}" "${FORCE_ARGS[@]}"
+          fi
+
+      - name: Build Pages site
+        if: steps.sync.outputs.should_deploy == 'true'
+        run: |
           python scripts/build_pages_site.py
 
+      - name: Commit generated data
+        if: steps.sync.outputs.should_commit == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add -f \
+            data/market_overview \
+            outputs/app \
+            outputs/dragon_tiger \
+            outputs/html \
+            outputs/market \
+            outputs/.nojekyll
+          if [[ -e data/reference/stock_location_mapping.json ]]; then
+            git add -f data/reference/stock_location_mapping.json
+          fi
+          if [[ -e data/shared_state/stock_location_profile_cache.json ]]; then
+            git add -f data/shared_state/stock_location_profile_cache.json
+          fi
+          if git diff --cached --quiet; then
+            echo "[stockgraph] no generated data changes to commit"
+          else
+            git commit -m "chore(data): update routine market data"
+            git push
+          fi
+
       - name: Upload Pages artifact
+        if: steps.sync.outputs.should_deploy == 'true'
         uses: actions/upload-pages-artifact@v3
         with:
           path: outputs
 
   deploy:
-    if: github.event_name != 'push'
+    if: github.event_name != 'push' && needs.build-pages.outputs.should_deploy == 'true'
     environment:
       name: github-pages
       url: ${{ steps.deployment.outputs.page_url }}
