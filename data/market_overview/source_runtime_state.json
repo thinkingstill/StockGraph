@@ -1,0 +1,44 @@
+{
+  "market_spot": {
+    "eastmoney_all": {
+      "failure_count": 1,
+      "consecutive_failures": 1,
+      "last_failure_ts": 1780388763.4863162,
+      "last_failure_at": "2026-06-02 08:26:03",
+      "average_duration_ms": 17440.929651260376,
+      "cooldown_until": 1780388793.4863362,
+      "last_error": "('Connection aborted.', RemoteDisconnected('Remote end closed connection without response'))"
+    },
+    "eastmoney_segmented": {
+      "failure_count": 1,
+      "consecutive_failures": 1,
+      "last_failure_ts": 1780388822.360476,
+      "last_failure_at": "2026-06-02 08:27:02",
+      "average_duration_ms": 58873.82960319519,
+      "cooldown_until": 1780388852.3605027,
+      "last_error": "分市场实时行情全部失败"
+    },
+    "sina_all": {
+      "success_count": 1,
+      "consecutive_failures": 0,
+      "last_success_ts": 1780388878.9083812,
+      "last_success_at": "2026-06-02 08:27:58",
+      "average_duration_ms": 56547.510862350464,
+      "last_record_count": 5524,
+      "cooldown_until": 0,
+      "last_error": ""
+    }
+  },
+  "hot_xueqiu": {
+    "parallel": {
+      "success_count": 1,
+      "consecutive_failures": 0,
+      "last_success_ts": 1780388978.0959375,
+      "last_success_at": "2026-06-02 08:29:38",
+      "average_duration_ms": 98803.71952056885,
+      "last_record_count": 5781,
+      "cooldown_until": 0,
+      "last_error": ""
+    }
+  }
+}
