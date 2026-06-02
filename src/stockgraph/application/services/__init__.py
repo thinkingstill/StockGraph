@@ -1,5 +1,6 @@
 __all__ = [
     "DashboardGenerationService",
+    "DragonTigerAnalysisService",
     "DragonTigerIngestionService",
     "MarketOverviewService",
     "NetworkAnalysisService",
@@ -13,6 +14,10 @@ def __getattr__(name: str):
         from .dashboard_generation import DashboardGenerationService
 
         return DashboardGenerationService
+    if name == "DragonTigerAnalysisService":
+        from .dragon_tiger_analysis import DragonTigerAnalysisService
+
+        return DragonTigerAnalysisService
     if name == "DragonTigerIngestionService":
         from .dragon_tiger_ingestion import DragonTigerIngestionService
 

@@ -12,6 +12,7 @@ StockGraph/
 │   └── architecture.md
 ├── outputs/
 │   ├── app/                  # 统一前端产物（index.html + data/）
+│   ├── dragon_tiger/         # 龙虎榜独立分析 JSON
 │   ├── html/                 # 生成的静态页面
 │   └── market/               # 市场热度 HTML
 ├── scripts/                  # 根目录执行入口
@@ -38,6 +39,7 @@ StockGraph/
 - 席位类型识别、知名游资别名识别
 - 查询页面生成
 - 综合关系网络页面生成
+- 龙虎榜数据 + 网络图独立 JSON 导出，方便被 skill 或外部分析脚本单独调用
 - 新闻领域模型、清洗/标签规则骨架
 - 新闻入库服务与新闻数据源占位接口
 - **akshare 个股新闻采集**：通过 `stock_news_em` 获取东方财富个股近期新闻，支持按股票代码批量拉取
@@ -74,6 +76,7 @@ StockGraph/
 - 图分析链路已打通框架：
   - 已能从现有龙虎榜数据构建 `seat-stock`、`seat-seat`、`stock-stock` 图快照
   - 已有 `build_graph_snapshots` 入口并支持写入数据库
+  - 已有 `analyze_dragon_tiger` 独立入口，可按单日或时间区间导出分析 JSON
 - **全 A 股图谱展示链路已打通**：
   - 统一前端新增「全 A 图谱」tab
   - 数据文件：`outputs/app/data/stock_super_graph.json`
@@ -124,6 +127,8 @@ PYTHONPATH=src python3 -m stockgraph.cli.sync_news --limit 50
 PYTHONPATH=src python3 -m stockgraph.cli.sync_news --stock-codes "000001,600519" --stock-limit 10
 PYTHONPATH=src python3 -m stockgraph.cli.sync_stock_locations --limit 100 --sleep 1.2
 PYTHONPATH=src python3 -m stockgraph.cli.build_graph_snapshots --persist
+PYTHONPATH=src python3 -m stockgraph.cli.analyze_dragon_tiger --date 2026-04-17
+PYTHONPATH=src python3 -m stockgraph.cli.analyze_dragon_tiger --start-date 2026-04-01 --end-date 2026-04-17
 PYTHONPATH=src python3 -m stockgraph.cli.sync_market_overview --year 2025
 PYTHONPATH=src python3 -m stockgraph.cli.build_unified_app
 ```
@@ -138,9 +143,49 @@ python3 scripts/sync_news.py --limit 50
 python3 scripts/sync_news.py --stock-codes "000001,600519" --stock-limit 10
 python3 scripts/sync_stock_locations.py --limit 100 --sleep 1.2
 python3 scripts/build_graph_snapshots.py --persist
+python3 scripts/analyze_dragon_tiger.py --date 2026-04-17
+python3 scripts/analyze_dragon_tiger.py --start-date 2026-04-01 --end-date 2026-04-17
 python3 scripts/sync_market_overview.py --year 2025
 python3 scripts/build_unified_app.py
 ```
+
+### 龙虎榜独立分析导出
+
+`scripts/analyze_dragon_tiger.py` 只读取当前 SQLite 中已有的龙虎榜数据，不会联网抓取，也不会刷新 HTML。它适合被 Codex skill、定时任务或外部分析程序单独调用。
+
+常用示例：
+
+```bash
+# 单个交易日
+python3 scripts/analyze_dragon_tiger.py --date 2026-04-17
+
+# 时间区间
+python3 scripts/analyze_dragon_tiger.py --start-date 2026-04-01 --end-date 2026-04-17
+
+# 指定输出路径，并同时把三类图快照写入 SQLite
+python3 scripts/analyze_dragon_tiger.py \
+  --start-date 2026-04-01 \
+  --end-date 2026-04-17 \
+  --output outputs/dragon_tiger/april_analysis.json \
+  --persist-graphs
+```
+
+默认输出路径：
+
+- 单日：`outputs/dragon_tiger/dragon_tiger_analysis_YYYY-MM-DD.json`
+- 区间：`outputs/dragon_tiger/dragon_tiger_analysis_START_END.json`
+- 未传日期：`outputs/dragon_tiger/dragon_tiger_analysis_all.json`
+
+输出 JSON 使用 `dragon_tiger_analysis.v1` schema，金额单位为万元，顶层结构稳定如下：
+
+- `period`：运行模式、开始/结束日期、实际命中的交易日列表
+- `stats`：区间总操作数、股票数、席位数、买入/卖出/净额
+- `rankings`：区间维度的股票和席位净买、净卖、活跃榜
+- `daily`：逐交易日的 `stats + rankings`
+- `operations`：原始席位操作明细，字段包括日期、股票、席位、方向、金额、席位类型、游资别名
+- `graphs`：三类网络图，分别为 `seat_stock`、`seat_projection`、`stock_projection`，每类都包含 `summary` 和完整 `snapshot.nodes/snapshot.edges`
+
+如果目标日期或区间在 SQLite 中没有记录，脚本仍会生成空 JSON，便于调用方按同一 schema 处理“无数据”场景。
 
 如果希望一次性生成所有数据和页面，直接运行：
 

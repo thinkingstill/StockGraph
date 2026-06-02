@@ -5,6 +5,7 @@ from stockgraph.domain.graph import (
     build_stock_stock_projection,
     build_trader_seat_projection,
     summarize_graph,
+    GraphSnapshot,
 )
 from stockgraph.infrastructure.db.repositories import DragonTigerRepository, GraphRepository
 
@@ -56,3 +57,21 @@ class NetworkAnalysisService:
         if persist:
             self.graph_repository.save_snapshot(snapshot)
         return summarize_graph(snapshot)
+
+    def build_snapshots(
+        self,
+        start_date: str | None = None,
+        end_date: str | None = None,
+        persist: bool = False,
+    ) -> dict[str, GraphSnapshot]:
+        records = self.dragon_tiger_repository.list_operations(start_date=start_date, end_date=end_date)
+        snapshot_date = end_date or start_date or "all"
+        snapshots = {
+            "seat_stock": build_stock_seat_bipartite_graph(records=records, snapshot_date=snapshot_date),
+            "seat_projection": build_trader_seat_projection(records=records, snapshot_date=snapshot_date),
+            "stock_projection": build_stock_stock_projection(records=records, snapshot_date=snapshot_date),
+        }
+        if persist:
+            for snapshot in snapshots.values():
+                self.graph_repository.save_snapshot(snapshot)
+        return snapshots
