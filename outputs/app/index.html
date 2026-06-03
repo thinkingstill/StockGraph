@@ -248,6 +248,28 @@
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
       return res.json();
     }
+    function dateRangeControls(prefix, dates, startDate, endDate) {
+      return `
+        <select id="${prefix}-start">${dates.map(d => `<option value="${escapeHtml(d)}" ${d === startDate ? 'selected' : ''}>起: ${escapeHtml(d)}</option>`).join('')}</select>
+        <select id="${prefix}-end">${dates.map(d => `<option value="${escapeHtml(d)}" ${d === endDate ? 'selected' : ''}>止: ${escapeHtml(d)}</option>`).join('')}</select>`;
+    }
+    function selectedDateRange(prefix, dates) {
+      const start = document.getElementById(`${prefix}-start`)?.value || dates[0] || '';
+      const end = document.getElementById(`${prefix}-end`)?.value || start;
+      const a = dates.indexOf(start);
+      const b = dates.indexOf(end);
+      if (a < 0 || b < 0) return dates.slice(0, 1);
+      const from = Math.min(a, b);
+      const to = Math.max(a, b);
+      return dates.slice(from, to + 1);
+    }
+    function dateRangeLabel(range) {
+      if (!range.length) return '-';
+      return range.length === 1 ? range[0] : `${range[0]} 至 ${range[range.length - 1]}`;
+    }
+    function flattenByDate(map, range) {
+      return range.flatMap(date => (map[date] || []).map(row => ({ ...row, date: row.date || date })));
+    }
     function bindTabs() {
       document.querySelectorAll('.tab-btn').forEach(btn => {
         btn.addEventListener('click', () => {
@@ -308,16 +330,17 @@
 
     function renderDragonQuery(root, payload) {
       const dates = payload.date_list || [];
-      let currentDate = payload.latest_date || dates[0] || '';
+      const defaultStart = payload.latest_date || dates[0] || '';
+      const defaultEnd = defaultStart;
       root.innerHTML = `
         <div class="stats">
-          <div class="stat"><div class="k">当前日期</div><div class="v" id="dq-date">-</div></div>
+          <div class="stat"><div class="k">日期区间</div><div class="v" id="dq-date">-</div></div>
           <div class="stat"><div class="k">股票数</div><div class="v" id="dq-stock-count">0</div></div>
           <div class="stat"><div class="k">席位数</div><div class="v" id="dq-seat-count">0</div></div>
           <div class="stat"><div class="k">记录数</div><div class="v" id="dq-total">0</div></div>
         </div>
         <div class="filters">
-          <select id="dq-select">${dates.map(d => `<option value="${d}" ${d === currentDate ? 'selected' : ''}>${d}</option>`).join('')}</select>
+          ${dateRangeControls('dq', dates, defaultStart, defaultEnd)}
           <input id="dq-stock" placeholder="股票代码或名称">
           <input id="dq-seat" placeholder="席位或外号">
           <button class="primary" id="dq-search">查询</button>
@@ -330,25 +353,49 @@
         </div>`;
 
       const allData = payload.all_operations || {};
-      const activeStocks = payload.all_active_stocks || {};
-      const activeSeats = payload.all_active_seats || {};
+
+      function aggregateStocks(ops) {
+        const grouped = new Map();
+        ops.forEach(row => {
+          const item = grouped.get(row.stockCode) || { code: row.stockCode, name: row.stockName, seats: new Set(), buy: 0, sell: 0 };
+          item.seats.add(row.seatName);
+          if (row.direction === '买') item.buy += Number(row.amount || 0);
+          if (row.direction === '卖') item.sell += Number(row.amount || 0);
+          grouped.set(row.stockCode, item);
+        });
+        return Array.from(grouped.values()).map(x => ({ ...x, seatCount: x.seats.size })).sort((a,b) => (b.seatCount - a.seatCount) || (b.buy - a.buy));
+      }
+      function aggregateSeats(ops) {
+        const grouped = new Map();
+        ops.forEach(row => {
+          const item = grouped.get(row.seatName) || { name: row.seatName, type: row.seatType, alias: row.alias, count: 0, buy: 0, sell: 0 };
+          item.count += 1;
+          if (row.alias) item.alias = row.alias;
+          if (row.direction === '买') item.buy += Number(row.amount || 0);
+          if (row.direction === '卖') item.sell += Number(row.amount || 0);
+          grouped.set(row.seatName, item);
+        });
+        return Array.from(grouped.values()).map(x => ({ ...x, net: x.buy - x.sell })).sort((a,b) => (b.count - a.count) || (b.buy - a.buy));
+      }
 
       function draw() {
-        currentDate = document.getElementById('dq-select').value;
+        const range = selectedDateRange('dq', dates);
         const stockKw = document.getElementById('dq-stock').value.trim().toLowerCase();
         const seatKw = document.getElementById('dq-seat').value.trim().toLowerCase();
-        const ops = (allData[currentDate] || []).filter(item => {
+        const ops = flattenByDate(allData, range).filter(item => {
           const stockPass = !stockKw || item.stockCode.toLowerCase().includes(stockKw) || item.stockName.toLowerCase().includes(stockKw);
           const seatPass = !seatKw || item.seatName.toLowerCase().includes(seatKw) || String(item.alias || '').toLowerCase().includes(seatKw);
           return stockPass && seatPass;
         });
-        document.getElementById('dq-date').textContent = currentDate || '-';
+        const stockRows = aggregateStocks(ops);
+        const seatRows = aggregateSeats(ops);
+        document.getElementById('dq-date').textContent = dateRangeLabel(range);
         document.getElementById('dq-stock-count').textContent = new Set(ops.map(x => x.stockCode)).size;
         document.getElementById('dq-seat-count').textContent = new Set(ops.map(x => x.seatName)).size;
         document.getElementById('dq-total').textContent = ops.length;
-        document.getElementById('dq-stocks').innerHTML = (activeStocks[currentDate] || []).slice(0, 12).map(x => `<tr><td>${escapeHtml(x.name)} (${escapeHtml(x.code)})</td><td>${x.seatCount}</td><td class="buy">${x.buy.toFixed(2)}</td><td class="sell">${x.sell.toFixed(2)}</td></tr>`).join('');
-        document.getElementById('dq-seats').innerHTML = (activeSeats[currentDate] || []).slice(0, 12).map(x => `<tr><td>${escapeHtml(x.name)}</td><td>${escapeHtml(x.type || '-')}</td><td>${x.count}</td><td class="${x.net >= 0 ? 'buy' : 'sell'}">${x.net.toFixed(2)}</td></tr>`).join('');
-        document.getElementById('dq-results').innerHTML = ops.slice(0, 120).map(x => `<tr><td>${escapeHtml(x.stockName)} (${escapeHtml(x.stockCode)})</td><td>${escapeHtml(x.seatName)}</td><td class="${x.direction === '买' ? 'buy' : 'sell'}">${x.direction}</td><td>${Number(x.amount || 0).toFixed(2)}</td></tr>`).join('');
+        document.getElementById('dq-stocks').innerHTML = stockRows.slice(0, 12).map(x => `<tr><td>${escapeHtml(x.name)} (${escapeHtml(x.code)})</td><td>${x.seatCount}</td><td class="buy">${x.buy.toFixed(2)}</td><td class="sell">${x.sell.toFixed(2)}</td></tr>`).join('');
+        document.getElementById('dq-seats').innerHTML = seatRows.slice(0, 12).map(x => `<tr><td>${escapeHtml(x.name)}</td><td>${escapeHtml(x.type || '-')}</td><td>${x.count}</td><td class="${x.net >= 0 ? 'buy' : 'sell'}">${x.net.toFixed(2)}</td></tr>`).join('');
+        document.getElementById('dq-results').innerHTML = ops.slice(0, 120).map(x => `<tr><td>${escapeHtml(x.date)}<br>${escapeHtml(x.stockName)} (${escapeHtml(x.stockCode)})</td><td>${escapeHtml(x.seatName)}</td><td class="${x.direction === '买' ? 'buy' : 'sell'}">${x.direction}</td><td>${Number(x.amount || 0).toFixed(2)}</td></tr>`).join('');
       }
 
       document.getElementById('dq-search').addEventListener('click', draw);
@@ -357,13 +404,18 @@
         document.getElementById('dq-seat').value = '';
         draw();
       });
-      document.getElementById('dq-select').addEventListener('change', draw);
+      ['dq-start','dq-end'].forEach(id => document.getElementById(id).addEventListener('change', draw));
       draw();
     }
 
     function renderDragonGraph(root, payload) {
+      const all = payload.records || [];
+      const dates = Array.from(new Set(all.map(x => x.date).filter(Boolean))).sort().reverse();
+      const defaultStart = dates[0] || '';
+      const defaultEnd = defaultStart;
       root.innerHTML = `
         <div class="filters">
+          ${dateRangeControls('dg', dates, defaultStart, defaultEnd)}
           <input id="dg-keyword" placeholder="股票、席位、类型关键词">
           <button class="primary" id="dg-run">查询</button>
           <button id="dg-reset">重置</button>
@@ -376,10 +428,10 @@
         </div>
         <div class="card"><div id="dg-chart" class="chart"></div></div>`;
       const chart = echarts.init(document.getElementById('dg-chart'));
-      const all = payload.records || [];
       function draw() {
+        const range = new Set(selectedDateRange('dg', dates));
         const kw = document.getElementById('dg-keyword').value.trim().toLowerCase();
-        const data = all.filter(x => !kw || x.stock_code.toLowerCase().includes(kw) || x.stock_name.toLowerCase().includes(kw) || x.seat_name.toLowerCase().includes(kw) || String(x.seat_type || '').toLowerCase().includes(kw) || String(x.trader_alias || '').toLowerCase().includes(kw));
+        const data = all.filter(x => range.has(x.date) && (!kw || x.stock_code.toLowerCase().includes(kw) || x.stock_name.toLowerCase().includes(kw) || x.seat_name.toLowerCase().includes(kw) || String(x.seat_type || '').toLowerCase().includes(kw) || String(x.trader_alias || '').toLowerCase().includes(kw)));
         const seatMap = new Map();
         const stockMap = new Map();
         data.forEach(r => {
@@ -430,11 +482,16 @@
       }
       document.getElementById('dg-run').addEventListener('click', draw);
       document.getElementById('dg-reset').addEventListener('click', () => { document.getElementById('dg-keyword').value = ''; draw(); });
+      ['dg-start','dg-end'].forEach(id => document.getElementById(id).addEventListener('change', draw));
       draw();
     }
 
     function renderMarketHot(root, payload) {
-      const records = payload.records || [];
+      const dates = payload.date_list || [];
+      const recordsByDate = payload.records_by_date || {};
+      const defaultStart = payload.latest_date || payload.trade_date || dates[0] || '';
+      const defaultEnd = defaultStart;
+      let records = recordsByDate[defaultStart] || payload.records || [];
       if (!records.length) {
         root.innerHTML = '<div class="empty">市场热度数据当前不可用</div>';
         return;
@@ -445,31 +502,42 @@
       const defaultY = fieldEntries.find(([k]) => k === 'tweet_rank')?.[0] || fieldEntries[1]?.[0] || fieldEntries[0][0];
       const defaultZ = fieldEntries.find(([k]) => k === 'change_pct')?.[0] || fieldEntries[2]?.[0] || fieldEntries[0][0];
       const defaultSize = fieldEntries.find(([k]) => k === 'deal_rank')?.[0] || fieldEntries[3]?.[0] || fieldEntries[0][0];
-      const industries = Array.from(new Set(records.map(x => x.industry))).sort();
-      const exchanges = Array.from(new Set(records.map(x => x.exchange))).sort();
       root.innerHTML = `
         <div class="stats">
-          <div class="stat"><div class="k">交易日</div><div class="v">${escapeHtml(payload.trade_date || '-')}</div></div>
-          <div class="stat"><div class="k">热度记录</div><div class="v">${records.length}</div></div>
-          <div class="stat"><div class="k">行业数</div><div class="v" id="mh-industry-count">${industries.length}</div></div>
-          <div class="stat"><div class="k">交易所数</div><div class="v">${exchanges.length}</div></div>
+          <div class="stat"><div class="k">日期区间</div><div class="v" id="mh-date-v">-</div></div>
+          <div class="stat"><div class="k">热度记录</div><div class="v" id="mh-record-count">0</div></div>
+          <div class="stat"><div class="k">行业数</div><div class="v" id="mh-industry-count">0</div></div>
+          <div class="stat"><div class="k">交易所数</div><div class="v" id="mh-exchange-count">0</div></div>
         </div>
         <div class="filters">
+          ${dateRangeControls('mh', dates, defaultStart, defaultEnd)}
           <select id="mh-x">${fieldEntries.map(([k,v]) => `<option value="${k}" ${k===defaultX?'selected':''}>X轴: ${v}</option>`).join('')}</select>
           <select id="mh-y">${fieldEntries.map(([k,v]) => `<option value="${k}" ${k===defaultY?'selected':''}>Y轴: ${v}</option>`).join('')}</select>
           <select id="mh-z">${fieldEntries.map(([k,v]) => `<option value="${k}" ${k===defaultZ?'selected':''}>Z轴: ${v}</option>`).join('')}</select>
           <select id="mh-size">${fieldEntries.map(([k,v]) => `<option value="${k}" ${k===defaultSize?'selected':''}>大小: ${v}</option>`).join('')}</select>
-          <select id="mh-exchange"><option value="">全部交易所</option>${exchanges.map(x => `<option value="${escapeHtml(x)}">${escapeHtml(x)}</option>`).join('')}</select>
-          <select id="mh-industry"><option value="">全部行业</option>${industries.map(x => `<option value="${escapeHtml(x)}">${escapeHtml(x)}</option>`).join('')}</select>
+          <select id="mh-exchange"><option value="">全部交易所</option></select>
+          <select id="mh-industry"><option value="">全部行业</option></select>
           <input id="mh-keyword" placeholder="股票代码/名称/行业关键词">
           <button class="primary" id="mh-run">刷新</button>
           <button id="mh-reset">重置</button>
         </div>
         <div class="card"><div id="mh-chart" class="chart"></div></div>
         <div class="card" style="margin-top:16px;"><table><thead><tr><th>股票</th><th>行业</th><th>交易所</th><th>关注</th><th>讨论</th><th>交易</th><th>涨跌幅</th><th>成交额</th></tr></thead><tbody id="mh-table"></tbody></table></div>`;
-      document.getElementById('mh-table').innerHTML = records.slice(0, 120).map(x => `<tr><td>${escapeHtml(x.stock_name)} (${escapeHtml(x.stock_code)})</td><td>${escapeHtml(x.industry)}</td><td>${Number(x.follow_rank || 0).toFixed(1)}</td><td>${Number(x.tweet_rank || 0).toFixed(1)}</td><td>${Number(x.deal_rank || 0).toFixed(1)}</td><td class="${Number(x.change_pct || 0) >= 0 ? 'buy' : 'sell'}">${Number(x.change_pct || 0).toFixed(2)}%</td></tr>`).join('');
       const chart = echarts.init(document.getElementById('mh-chart'));
+      function fillMarketHotFilters() {
+        records = flattenByDate(recordsByDate, selectedDateRange('mh', dates));
+        const industries = Array.from(new Set(records.map(x => x.industry))).sort();
+        const exchanges = Array.from(new Set(records.map(x => x.exchange))).sort();
+        document.getElementById('mh-industry').innerHTML = '<option value="">全部行业</option>' + industries.map(x => `<option value="${escapeHtml(x)}">${escapeHtml(x)}</option>`).join('');
+        document.getElementById('mh-exchange').innerHTML = '<option value="">全部交易所</option>' + exchanges.map(x => `<option value="${escapeHtml(x)}">${escapeHtml(x)}</option>`).join('');
+        document.getElementById('mh-date-v').textContent = dateRangeLabel(selectedDateRange('mh', dates));
+        document.getElementById('mh-record-count').textContent = records.length;
+        document.getElementById('mh-exchange-count').textContent = exchanges.length;
+        document.getElementById('mh-industry-count').textContent = industries.length;
+      }
       function draw() {
+        const range = selectedDateRange('mh', dates);
+        records = flattenByDate(recordsByDate, range);
         const xField = document.getElementById('mh-x').value;
         const yField = document.getElementById('mh-y').value;
         const zField = document.getElementById('mh-z').value;
@@ -483,8 +551,15 @@
           const matchKeyword = !keyword || x.stock_code.toLowerCase().includes(keyword) || x.stock_name.toLowerCase().includes(keyword) || x.industry.toLowerCase().includes(keyword);
           return matchExchange && matchIndustry && matchKeyword;
         });
+        document.getElementById('mh-date-v').textContent = dateRangeLabel(range);
+        document.getElementById('mh-record-count').textContent = filtered.length;
         document.getElementById('mh-industry-count').textContent = new Set(filtered.map(x => x.industry)).size;
-        document.getElementById('mh-table').innerHTML = filtered.slice(0, 150).map(x => `<tr><td>${escapeHtml(x.stock_name)} (${escapeHtml(x.stock_code)})</td><td>${escapeHtml(x.industry)}</td><td>${escapeHtml(x.exchange)}</td><td>${Number(x.follow_rank || 0).toFixed(1)}</td><td>${Number(x.tweet_rank || 0).toFixed(1)}</td><td>${Number(x.deal_rank || 0).toFixed(1)}</td><td class="${Number(x.change_pct || 0) >= 0 ? 'buy' : 'sell'}">${Number(x.change_pct || 0).toFixed(2)}%</td><td>${Number(x.amount || 0).toFixed(0)}</td></tr>`).join('');
+        document.getElementById('mh-exchange-count').textContent = new Set(filtered.map(x => x.exchange)).size;
+        document.getElementById('mh-table').innerHTML = filtered.slice(0, 150).map(x => `<tr><td>${escapeHtml(x.date)}<br>${escapeHtml(x.stock_name)} (${escapeHtml(x.stock_code)})</td><td>${escapeHtml(x.industry)}</td><td>${escapeHtml(x.exchange)}</td><td>${Number(x.follow_rank || 0).toFixed(1)}</td><td>${Number(x.tweet_rank || 0).toFixed(1)}</td><td>${Number(x.deal_rank || 0).toFixed(1)}</td><td class="${Number(x.change_pct || 0) >= 0 ? 'buy' : 'sell'}">${Number(x.change_pct || 0).toFixed(2)}%</td><td>${Number(x.amount || 0).toFixed(0)}</td></tr>`).join('');
+        if (!filtered.length) {
+          chart.clear();
+          return;
+        }
         chart.setOption({
           tooltip: {
             formatter: p => `${escapeHtml(p.data.stock_name)} (${escapeHtml(p.data.stock_code)})<br/>行业: ${escapeHtml(p.data.industry)}<br/>交易所: ${escapeHtml(p.data.exchange)}<br/>${escapeHtml(numericFields[xField])}: ${Number(p.data.raw[xField] || 0).toFixed(2)}<br/>${escapeHtml(numericFields[yField])}: ${Number(p.data.raw[yField] || 0).toFixed(2)}<br/>${escapeHtml(numericFields[zField])}: ${Number(p.data.raw[zField] || 0).toFixed(2)}`,
@@ -509,6 +584,7 @@
           }]
         }, true);
       }
+      ['mh-start','mh-end'].forEach(id => document.getElementById(id).addEventListener('change', () => { fillMarketHotFilters(); draw(); }));
       document.getElementById('mh-run').addEventListener('click', draw);
       document.getElementById('mh-reset').addEventListener('click', () => {
         document.getElementById('mh-x').value = defaultX;
@@ -521,6 +597,7 @@
         draw();
       });
       ['mh-x','mh-y','mh-z','mh-size','mh-exchange','mh-industry'].forEach(id => document.getElementById(id).addEventListener('change', draw));
+      fillMarketHotFilters();
       draw();
     }
 
@@ -535,7 +612,8 @@
       const categoryNames = categories.map(x => x.name);
       const categoryByKey = new Map(categories.map((x, idx) => [x.key, { ...x, idx }]));
       const relationLabels = payload.relation_types || {};
-      let currentDate = payload.latest_date || dates[0];
+      const defaultStart = payload.latest_date || dates[0];
+      const defaultEnd = defaultStart;
       let currentFocus = null;
       const styles = `
         <style>
@@ -555,13 +633,13 @@
         </style>`;
       root.innerHTML = styles + `
         <div class="stats">
-          <div class="stat"><div class="k">交易日</div><div class="v" id="sg-date-v">-</div></div>
+          <div class="stat"><div class="k">日期区间</div><div class="v" id="sg-date-v">-</div></div>
           <div class="stat"><div class="k">股票节点</div><div class="v" id="sg-stock-v">0</div></div>
           <div class="stat"><div class="k">关系边</div><div class="v" id="sg-edge-v">0</div></div>
           <div class="stat"><div class="k">席位/新闻</div><div class="v" id="sg-alt-v">0</div></div>
         </div>
         <div class="filters">
-          <select id="sg-date">${dates.map(d => `<option value="${escapeHtml(d)}" ${d === currentDate ? 'selected' : ''}>${escapeHtml(d)}</option>`).join('')}</select>
+          ${dateRangeControls('sg', dates, defaultStart, defaultEnd)}
           <input id="sg-keyword" placeholder="股票、行业、席位、新闻关键词">
           <select id="sg-industry"><option value="">全部行业</option></select>
           <select id="sg-exchange"><option value="">全部交易所</option></select>
@@ -589,8 +667,46 @@
 
       const chart = echarts.init(document.getElementById('sg-chart'));
 
+      function aggregateGraphs(range) {
+        if (range.length === 1) return graphs[range[0]] || { nodes: [], links: [], stats: {} };
+        const nodeMap = new Map();
+        const linkMap = new Map();
+        range.forEach(date => {
+          const g = graphs[date] || { nodes: [], links: [] };
+          (g.nodes || []).forEach(node => {
+            const current = nodeMap.get(node.id) || { ...node, value: 0, attributes: { ...(node.attributes || {}) }, dates: new Set() };
+            current.value += Number(node.value || 0);
+            current.dates.add(date);
+            current.attributes = { ...current.attributes, ...(node.attributes || {}) };
+            current.attributes.date_count = current.dates.size;
+            nodeMap.set(node.id, current);
+          });
+          (g.links || []).forEach(link => {
+            const key = `${link.source}|${link.target}|${link.type}`;
+            const current = linkMap.get(key) || { ...link, value: 0, attributes: { ...(link.attributes || {}) }, dates: new Set() };
+            current.value += Number(link.value || 0);
+            current.dates.add(date);
+            current.attributes = { ...current.attributes, ...(link.attributes || {}) };
+            current.attributes.date_count = current.dates.size;
+            linkMap.set(key, current);
+          });
+        });
+        const nodes = Array.from(nodeMap.values()).map(({ dates, ...node }) => node);
+        const links = Array.from(linkMap.values()).map(({ dates, ...link }) => link);
+        return {
+          date: dateRangeLabel(range),
+          nodes,
+          links,
+          stats: {
+            stock_count: nodes.filter(n => n.category === 'stock').length,
+            seat_count: nodes.filter(n => n.category === 'seat').length,
+            news_count: nodes.filter(n => n.category === 'news').length,
+            edge_count: links.length,
+          },
+        };
+      }
       function graph() {
-        return graphs[currentDate] || { nodes: [], links: [], stats: {} };
+        return aggregateGraphs(selectedDateRange('sg', dates));
       }
       function getCheckedCategories() {
         return new Set(Array.from(document.querySelectorAll('.sg-cat:checked')).map(x => x.value));
@@ -643,7 +759,7 @@
         return { nodes, links };
       }
       function draw() {
-        currentDate = document.getElementById('sg-date').value;
+        const range = selectedDateRange('sg', dates);
         const g = graph();
         const keyword = document.getElementById('sg-keyword').value.trim().toLowerCase();
         const industry = document.getElementById('sg-industry').value;
@@ -659,7 +775,7 @@
           if (rel === 'stock_exchange') return '#7c3aed';
           return '#94a3b8';
         };
-        document.getElementById('sg-date-v').textContent = currentDate;
+        document.getElementById('sg-date-v').textContent = dateRangeLabel(range);
         document.getElementById('sg-stock-v').textContent = g.stats?.stock_count || 0;
         document.getElementById('sg-edge-v').textContent = view.links.length;
         document.getElementById('sg-alt-v').textContent = `${g.stats?.seat_count || 0}/${g.stats?.news_count || 0}`;
@@ -729,7 +845,7 @@
             return `<div class="sg-mini"><div class="name">${escapeHtml(other.name)}</div><div class="meta">${escapeHtml(relationLabels[l.type] || l.type)} · 权重 ${Number(l.value || 0).toFixed(2)}</div></div>`;
           }).join('') || '<div class="muted">暂无关联边</div>'}`;
       }
-      document.getElementById('sg-date').addEventListener('change', () => { fillFilters(); draw(); });
+      ['sg-start','sg-end'].forEach(id => document.getElementById(id).addEventListener('change', () => { fillFilters(); draw(); }));
       document.getElementById('sg-run').addEventListener('click', draw);
       document.getElementById('sg-reset').addEventListener('click', () => {
         document.getElementById('sg-keyword').value = '';
@@ -761,7 +877,8 @@
         root.innerHTML = '<div class="empty">城市气泡图数据当前不可用</div>';
         return;
       }
-      let currentDate = payload.latest_date || dates[0];
+      const defaultStart = payload.latest_date || dates[0];
+      const defaultEnd = defaultStart;
       let chinaMapReady = false;
       let currentFiltered = [];
       let abortController = null;
@@ -794,13 +911,13 @@
         </style>`;
       root.innerHTML = styles + `
         <div class="stats">
-          <div class="stat"><div class="k">交易日</div><div class="v" id="ccb-date-v">-</div></div>
+          <div class="stat"><div class="k">日期区间</div><div class="v" id="ccb-date-v">-</div></div>
           <div class="stat"><div class="k">城市</div><div class="v" id="ccb-city-v">0</div></div>
           <div class="stat"><div class="k">上市公司</div><div class="v" id="ccb-stock-v">0</div></div>
           <div class="stat"><div class="k">加权涨跌</div><div class="v" id="ccb-change-v">0%</div></div>
         </div>
         <div class="ccb-tools">
-          <select id="ccb-date">${dates.map(d => `<option value="${escapeHtml(d)}" ${d === currentDate ? 'selected' : ''}>${escapeHtml(d)}</option>`).join('')}</select>
+          ${dateRangeControls('ccb', dates, defaultStart, defaultEnd)}
           <select id="ccb-province"><option value="">全部省份</option></select>
           <select id="ccb-city"><option value="">全部城市</option></select>
           <select id="ccb-industry"><option value="">全部行业</option></select>
@@ -872,8 +989,121 @@
         if (!n) return 8;
         return Math.max(10, Math.min(56, Math.sqrt(n / 100000000) * 2.6));
       }
+      function aggregateCityRange(range) {
+        if (range.length === 1) return dateMap[range[0]] || { cities: [], filters: {}, stats: {} };
+        const grouped = new Map();
+        range.forEach(date => {
+          const data = dateMap[date] || {};
+          (data.cities || []).forEach(city => {
+            const key = `${city.province}|${city.city}`;
+            const item = grouped.get(key) || {
+              province: city.province,
+              city: city.city,
+              lng: city.lng,
+              lat: city.lat,
+              value: city.value,
+              stock_count: 0,
+              known_market_cap_count: 0,
+              total_market_cap_sum: 0,
+              weighted_change_sum: 0,
+              amount: 0,
+              volume: 0,
+              up_count: 0,
+              down_count: 0,
+              flat_count: 0,
+              date_count: 0,
+              top_industries_map: new Map(),
+              location_quality: {},
+              stocks_map: new Map(),
+              market_cap_bucket: city.market_cap_bucket,
+            };
+            item.date_count += 1;
+            item.stock_count = Math.max(item.stock_count, Number(city.stock_count || 0));
+            item.known_market_cap_count = Math.max(item.known_market_cap_count, Number(city.known_market_cap_count || 0));
+            item.total_market_cap_sum += Number(city.total_market_cap || 0);
+            item.weighted_change_sum += Number(city.avg_change_pct || 0) * Number(city.total_market_cap || 0);
+            item.amount += Number(city.amount || 0);
+            item.volume += Number(city.volume || 0);
+            item.up_count += Number(city.up_count || 0);
+            item.down_count += Number(city.down_count || 0);
+            item.flat_count += Number(city.flat_count || 0);
+            Object.entries(city.location_quality || {}).forEach(([k, v]) => { item.location_quality[k] = (item.location_quality[k] || 0) + Number(v || 0); });
+            (city.top_industries || []).forEach(ind => {
+              const current = item.top_industries_map.get(ind.industry) || { industry: ind.industry, stock_count: 0, market_cap: 0, change_sum: 0, days: 0 };
+              current.stock_count = Math.max(current.stock_count, Number(ind.stock_count || 0));
+              current.market_cap += Number(ind.market_cap || 0);
+              current.change_sum += Number(ind.avg_change_pct || 0);
+              current.days += 1;
+              item.top_industries_map.set(ind.industry, current);
+            });
+            (city.stocks || []).forEach(stock => {
+              const current = item.stocks_map.get(stock.code) || { ...stock, market_cap: 0, change_sum: 0, days: 0, amount: 0 };
+              current.market_cap = Math.max(Number(current.market_cap || 0), Number(stock.market_cap || 0));
+              current.change_sum += Number(stock.change_pct || 0);
+              current.days += 1;
+              current.amount += Number(stock.amount || 0);
+              item.stocks_map.set(stock.code, current);
+            });
+            grouped.set(key, item);
+          });
+        });
+        const cities = Array.from(grouped.values()).map(item => {
+          const avgMarketCap = item.date_count ? item.total_market_cap_sum / item.date_count : 0;
+          const avgChange = item.total_market_cap_sum ? item.weighted_change_sum / item.total_market_cap_sum : 0;
+          const topIndustries = Array.from(item.top_industries_map.values()).map(ind => ({
+            industry: ind.industry,
+            stock_count: ind.stock_count,
+            market_cap: ind.days ? ind.market_cap / ind.days : 0,
+            avg_change_pct: ind.days ? ind.change_sum / ind.days : 0,
+          })).sort((a,b) => b.market_cap - a.market_cap);
+          const stocks = Array.from(item.stocks_map.values()).map(stock => ({
+            ...stock,
+            change_pct: stock.days ? stock.change_sum / stock.days : 0,
+          })).sort((a,b) => Number(b.market_cap || 0) - Number(a.market_cap || 0)).slice(0, 80);
+          return {
+            province: item.province,
+            city: item.city,
+            lng: item.lng,
+            lat: item.lat,
+            value: [item.lng, item.lat, avgMarketCap, avgChange, item.stock_count],
+            stock_count: item.stock_count,
+            known_market_cap_count: item.known_market_cap_count,
+            total_market_cap: avgMarketCap,
+            avg_change_pct: avgChange,
+            amount: item.amount,
+            volume: item.volume,
+            up_count: item.up_count,
+            down_count: item.down_count,
+            flat_count: item.flat_count,
+            top_industries: topIndustries.slice(0, 12),
+            location_quality: item.location_quality,
+            stocks,
+            market_cap_bucket: item.market_cap_bucket,
+          };
+        }).sort((a,b) => b.total_market_cap - a.total_market_cap);
+        const provinces = Array.from(new Set(cities.map(x => x.province))).sort();
+        const cityNames = Array.from(new Set(cities.map(x => x.city))).sort();
+        const industries = Array.from(new Set(cities.flatMap(x => (x.top_industries || []).map(i => i.industry)))).sort();
+        const locationQuality = {};
+        cities.forEach(city => Object.entries(city.location_quality || {}).forEach(([k, v]) => { locationQuality[k] = (locationQuality[k] || 0) + Number(v || 0); }));
+        return {
+          date: dateRangeLabel(range),
+          cities,
+          stats: {
+            stock_count: cities.reduce((sum, x) => sum + Number(x.stock_count || 0), 0),
+            city_count: cities.length,
+            location_quality: locationQuality,
+          },
+          filters: {
+            provinces,
+            cities: cityNames,
+            industries,
+            market_cap_buckets: [{key:'all',name:'全部市值'},{key:'gte_10000y',name:'万亿以上'},{key:'3000y_10000y',name:'3000亿-1万亿'},{key:'1000y_3000y',name:'1000亿-3000亿'},{key:'500y_1000y',name:'500亿-1000亿'},{key:'lt_500y',name:'500亿以下'}],
+          },
+        };
+      }
       function currentPayload() {
-        return dateMap[currentDate] || { cities: [], filters: {}, stats: {} };
+        return aggregateCityRange(selectedDateRange('ccb', dates));
       }
       function qualityLabel(quality) {
         const labels = { mapped: '精确映射', basic_info: '基础资料', exchange_fallback: '交易所降级', missing: '缺失' };
@@ -990,12 +1220,12 @@
         }
       }
       async function draw() {
-        currentDate = document.getElementById('ccb-date').value;
+        const range = selectedDateRange('ccb', dates);
         const data = currentPayload();
         const stats = data.stats || {};
         const quality = stats.location_quality || {};
         currentFiltered = (data.cities || []).filter(cityPasses);
-        document.getElementById('ccb-date-v').textContent = currentDate;
+        document.getElementById('ccb-date-v').textContent = dateRangeLabel(range);
         document.getElementById('ccb-city-v').textContent = currentFiltered.length;
         document.getElementById('ccb-stock-v').textContent = currentFiltered.reduce((sum, x) => sum + Number(x.stock_count || 0), 0);
         const filteredCap = currentFiltered.reduce((sum, x) => sum + Number(x.total_market_cap || 0), 0);
@@ -1074,7 +1304,7 @@
         industryNames.forEach(name => (newsByIndustry[name] || []).slice(0, 8).forEach(n => news.push({ industry: name, ...n })));
         news.sort((a,b) => String(b.published_at || '').localeCompare(String(a.published_at || '')));
         const filters = {
-          date: currentDate,
+          date: dateRangeLabel(selectedDateRange('ccb', dates)),
           province: document.getElementById('ccb-province').value || '全部',
           city: document.getElementById('ccb-city').value || '全部',
           industry: selectedIndustry || '全部',
@@ -1099,11 +1329,10 @@
         if (!news.length) text += '当前筛选行业暂无可关联新闻。\n';
         return text;
       }
-      document.getElementById('ccb-date').addEventListener('change', () => {
-        currentDate = document.getElementById('ccb-date').value;
+      ['ccb-start','ccb-end'].forEach(id => document.getElementById(id).addEventListener('change', () => {
         fillFilters();
         draw();
-      });
+      }));
       ['ccb-province','ccb-city','ccb-industry','ccb-cap','ccb-quality'].forEach(id => document.getElementById(id).addEventListener('change', draw));
       document.getElementById('ccb-min-count').addEventListener('keyup', e => { if (e.key === 'Enter') draw(); });
       document.getElementById('ccb-run').addEventListener('click', draw);
@@ -1304,32 +1533,66 @@
     }
 
     function renderMarketIndustry(root, payload) {
-      const records = payload.records || [];
+      const dates = payload.date_list || [];
+      const recordsByDate = payload.records_by_date || {};
+      const defaultStart = payload.latest_date || payload.trade_date || dates[0] || '';
+      const defaultEnd = defaultStart;
+      let records = recordsByDate[defaultStart] || payload.records || [];
       if (!records.length) {
         root.innerHTML = '<div class="empty">行业强弱数据当前不可用</div>';
         return;
       }
-      const top = records.slice(0, 12);
-      const bottom = records.slice(-12);
       root.innerHTML = `
         <div class="stats">
-          <div class="stat"><div class="k">交易日</div><div class="v">${escapeHtml(payload.trade_date || '-')}</div></div>
-          <div class="stat"><div class="k">行业数</div><div class="v">${records.length}</div></div>
+          <div class="stat"><div class="k">日期区间</div><div class="v" id="mi-date-v">-</div></div>
+          <div class="stat"><div class="k">行业数</div><div class="v" id="mi-count-v">0</div></div>
+        </div>
+        <div class="filters">
+          ${dateRangeControls('mi', dates, defaultStart, defaultEnd)}
         </div>
         <div class="grid">
           <div class="card split-2"><div id="mi-top" class="chart" style="min-height:360px;"></div></div>
           <div class="card split-2"><div id="mi-bottom" class="chart" style="min-height:360px;"></div></div>
           <div class="card"><table><thead><tr><th>行业</th><th>股票数</th><th>平均涨跌幅</th><th>总涨跌幅</th></tr></thead><tbody id="mi-table"></tbody></table></div>
         </div>`;
-      document.getElementById('mi-table').innerHTML = records.map(x => `<tr><td>${escapeHtml(x.industry)}</td><td>${x.stock_count}</td><td class="${Number(x.avg_change_pct) >= 0 ? 'buy' : 'sell'}">${Number(x.avg_change_pct).toFixed(2)}%</td><td class="${Number(x.total_change_pct) >= 0 ? 'buy' : 'sell'}">${Number(x.total_change_pct).toFixed(2)}%</td></tr>`).join('');
-      echarts.init(document.getElementById('mi-top')).setOption({
-        xAxis: { type: 'value' }, yAxis: { type: 'category', data: top.map(x => x.industry) },
-        series: [{ type: 'bar', data: top.map(x => x.total_change_pct), itemStyle: { color: '#0f766e' } }]
-      });
-      echarts.init(document.getElementById('mi-bottom')).setOption({
-        xAxis: { type: 'value' }, yAxis: { type: 'category', data: bottom.map(x => x.industry) },
-        series: [{ type: 'bar', data: bottom.map(x => x.total_change_pct), itemStyle: { color: '#b45309' } }]
-      });
+      const topChart = echarts.init(document.getElementById('mi-top'));
+      const bottomChart = echarts.init(document.getElementById('mi-bottom'));
+      function aggregateIndustryRange(range) {
+        const grouped = new Map();
+        range.forEach(date => (recordsByDate[date] || []).forEach(row => {
+          const item = grouped.get(row.industry) || { industry: row.industry, stock_count: 0, total_change_pct: 0, weighted_change: 0, days: 0 };
+          item.stock_count += Number(row.stock_count || 0);
+          item.total_change_pct += Number(row.total_change_pct || 0);
+          item.weighted_change += Number(row.avg_change_pct || 0) * Number(row.stock_count || 0);
+          item.days += 1;
+          grouped.set(row.industry, item);
+        }));
+        return Array.from(grouped.values()).map(x => ({
+          industry: x.industry,
+          stock_count: x.days ? Math.round(x.stock_count / x.days) : 0,
+          total_change_pct: x.total_change_pct,
+          avg_change_pct: x.stock_count ? x.weighted_change / x.stock_count : 0,
+        })).sort((a,b) => b.total_change_pct - a.total_change_pct);
+      }
+      function draw() {
+        const range = selectedDateRange('mi', dates);
+        records = aggregateIndustryRange(range);
+        const top = records.slice(0, 12);
+        const bottom = records.slice(-12);
+        document.getElementById('mi-date-v').textContent = dateRangeLabel(range);
+        document.getElementById('mi-count-v').textContent = records.length;
+        document.getElementById('mi-table').innerHTML = records.map(x => `<tr><td>${escapeHtml(x.industry)}</td><td>${x.stock_count}</td><td class="${Number(x.avg_change_pct) >= 0 ? 'buy' : 'sell'}">${Number(x.avg_change_pct).toFixed(2)}%</td><td class="${Number(x.total_change_pct) >= 0 ? 'buy' : 'sell'}">${Number(x.total_change_pct).toFixed(2)}%</td></tr>`).join('');
+        topChart.setOption({
+          xAxis: { type: 'value' }, yAxis: { type: 'category', data: top.map(x => x.industry) },
+          series: [{ type: 'bar', data: top.map(x => x.total_change_pct), itemStyle: { color: '#0f766e' } }]
+        }, true);
+        bottomChart.setOption({
+          xAxis: { type: 'value' }, yAxis: { type: 'category', data: bottom.map(x => x.industry) },
+          series: [{ type: 'bar', data: bottom.map(x => x.total_change_pct), itemStyle: { color: '#b45309' } }]
+        }, true);
+      }
+      ['mi-start','mi-end'].forEach(id => document.getElementById(id).addEventListener('change', draw));
+      draw();
     }
 
     function renderStockNews(root, payload) {

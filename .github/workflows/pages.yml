@@ -20,6 +20,11 @@ on:
         required: false
         type: string
         default: all
+      backfill_from_json:
+        description: 使用已有 JSON 离线回填数据库，不重新抓取网络数据（支持 all/dragon_tiger/market_overview/graphs）
+        required: false
+        type: boolean
+        default: false
       force_run:
         description: 忽略 A 股交易日历，强制运行目标日期/区间
         required: false
@@ -106,6 +111,7 @@ jobs:
       BACKFILL_START_DATE: ${{ inputs.backfill_start_date || '' }}
       BACKFILL_END_DATE: ${{ inputs.backfill_end_date || '' }}
       BACKFILL_AREAS: ${{ inputs.backfill_areas || 'all' }}
+      BACKFILL_FROM_JSON: ${{ inputs.backfill_from_json && '1' || '0' }}
       FORCE_RUN: ${{ inputs.force_run && '1' || '0' }}
       MARKET_OVERVIEW_YEAR: ${{ inputs.market_overview_year || '' }}
       SYNC_NEWS: '0'
@@ -152,11 +158,21 @@ jobs:
               echo "backfill_start_date and backfill_end_date must be provided together" >&2
               exit 1
             fi
-            python scripts/backfill_history.py \
-              --start-date "$BACKFILL_START_DATE" \
-              --end-date "$BACKFILL_END_DATE" \
-              --areas "$BACKFILL_AREAS" \
-              "${FORCE_ARGS[@]}"
+            if [[ "$BACKFILL_FROM_JSON" == "1" ]]; then
+              python scripts/backfill_from_json.py \
+                --start-date "$BACKFILL_START_DATE" \
+                --end-date "$BACKFILL_END_DATE" \
+                --areas "$BACKFILL_AREAS"
+              python scripts/build_unified_app.py
+              echo "should_commit=true" >> "$GITHUB_OUTPUT"
+              echo "should_deploy=true" >> "$GITHUB_OUTPUT"
+            else
+              python scripts/backfill_history.py \
+                --start-date "$BACKFILL_START_DATE" \
+                --end-date "$BACKFILL_END_DATE" \
+                --areas "$BACKFILL_AREAS" \
+                "${FORCE_ARGS[@]}"
+            fi
           else
             TARGET_ARGS=()
             if [[ -n "$TARGET_DATE" ]]; then
