@@ -1,6 +1,6 @@
 {
   "schemaVersion": "dragon_tiger_analysis.v1",
-  "generatedAt": "2026-06-03T05:24:17",
+  "generatedAt": "2026-06-03T15:07:11",
   "source": {
     "database": "/home/runner/work/StockGraph/StockGraph/data/shared_state/dragon_tiger.db",
     "amountUnit": "万元"
