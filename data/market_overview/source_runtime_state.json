@@ -1,42 +1,45 @@
 {
   "market_spot": {
     "eastmoney_all": {
-      "failure_count": 1,
-      "consecutive_failures": 1,
-      "last_failure_ts": 1780388763.4863162,
-      "last_failure_at": "2026-06-02 08:26:03",
-      "average_duration_ms": 17440.929651260376,
-      "cooldown_until": 1780388793.4863362,
+      "failure_count": 2,
+      "consecutive_failures": 2,
+      "last_failure_ts": 1781067575.3767204,
+      "last_failure_at": "2026-06-10 04:59:35",
+      "average_duration_ms": 24101.64713859558,
+      "cooldown_until": 1781067695.3767362,
       "last_error": "('Connection aborted.', RemoteDisconnected('Remote end closed connection without response'))"
     },
     "eastmoney_segmented": {
-      "failure_count": 1,
-      "consecutive_failures": 1,
-      "last_failure_ts": 1780388822.360476,
-      "last_failure_at": "2026-06-02 08:27:02",
-      "average_duration_ms": 58873.82960319519,
-      "cooldown_until": 1780388852.3605027,
+      "failure_count": 2,
+      "consecutive_failures": 2,
+      "last_failure_ts": 1781067641.6506855,
+      "last_failure_at": "2026-06-10 05:00:41",
+      "average_duration_ms": 66273.53501319885,
+      "cooldown_until": 1781067761.6507046,
       "last_error": "分市场实时行情全部失败"
     },
     "sina_all": {
       "success_count": 7,
-      "consecutive_failures": 0,
+      "consecutive_failures": 1,
       "last_success_ts": 1780980322.285943,
       "last_success_at": "2026-06-09 04:45:22",
-      "average_duration_ms": 51467.94,
+      "average_duration_ms": 117691.23244285583,
       "last_record_count": 5526,
-      "cooldown_until": 0,
-      "last_error": ""
+      "cooldown_until": 1781067581.2746923,
+      "last_error": "Can not decode value starting with character '<'",
+      "failure_count": 1,
+      "last_failure_ts": 1781067551.2746756,
+      "last_failure_at": "2026-06-10 04:59:11"
     }
   },
   "hot_xueqiu": {
     "parallel": {
-      "success_count": 7,
+      "success_count": 8,
       "consecutive_failures": 0,
-      "last_success_ts": 1780980419.7553854,
-      "last_success_at": "2026-06-09 04:46:59",
-      "average_duration_ms": 90507.07,
-      "last_record_count": 5762,
+      "last_success_ts": 1781067720.3891733,
+      "last_success_at": "2026-06-10 05:02:00",
+      "average_duration_ms": 86782.66,
+      "last_record_count": 5659,
       "cooldown_until": 0,
       "last_error": ""
     }
