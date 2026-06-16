@@ -19,12 +19,12 @@
       "last_error": "分市场实时行情全部失败"
     },
     "sina_all": {
-      "success_count": 10,
+      "success_count": 11,
       "consecutive_failures": 0,
-      "last_success_ts": 1781326764.8947563,
-      "last_success_at": "2026-06-13 04:59:24",
-      "average_duration_ms": 71062.4,
-      "last_record_count": 5526,
+      "last_success_ts": 1781588658.714319,
+      "last_success_at": "2026-06-16 05:44:18",
+      "average_duration_ms": 67462.35,
+      "last_record_count": 5527,
       "cooldown_until": 0,
       "last_error": "",
       "failure_count": 1,
@@ -34,12 +34,12 @@
   },
   "hot_xueqiu": {
     "parallel": {
-      "success_count": 11,
+      "success_count": 12,
       "consecutive_failures": 0,
-      "last_success_ts": 1781326851.9414136,
-      "last_success_at": "2026-06-13 05:00:51",
-      "average_duration_ms": 90484.6,
-      "last_record_count": 5873,
+      "last_success_ts": 1781588756.9796588,
+      "last_success_at": "2026-06-16 05:45:56",
+      "average_duration_ms": 92628.4,
+      "last_record_count": 9951,
       "cooldown_until": 0,
       "last_error": ""
     }
