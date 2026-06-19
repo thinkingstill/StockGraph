@@ -61,12 +61,20 @@ def render_unified_app() -> str:
       font-size: 13px;
       color: var(--muted);
     }
-    .tabs {
+    .workspace-tabs {
       display: flex;
       gap: 10px;
       flex-wrap: wrap;
+      margin-bottom: 10px;
+    }
+    .tabs {
+      display: none;
+      gap: 8px;
+      flex-wrap: wrap;
       margin-bottom: 18px;
     }
+    .tabs.active { display: flex; }
+    .workspace-btn,
     .tab-btn {
       border: 1px solid var(--line);
       background: rgba(255,255,255,0.75);
@@ -76,6 +84,12 @@ def render_unified_app() -> str:
       cursor: pointer;
       font-weight: 600;
     }
+    .tab-btn {
+      padding: 8px 14px;
+      font-size: 13px;
+      border-radius: 12px;
+    }
+    .workspace-btn.active,
     .tab-btn.active {
       background: linear-gradient(135deg, var(--accent), var(--accent-2));
       color: #fff;
@@ -177,7 +191,7 @@ def render_unified_app() -> str:
     <div class="hero">
       <div>
         <h1>StockGraph</h1>
-        <p>统一入口，按 tab 查看龙虎榜查询、关系网络、市场热度和行业强弱。每个 tab 独立取数，互不阻塞。</p>
+        <p>统一入口，按分析任务进入龙虎榜、市场热度、行业观察和个股研判。每个视图独立取数，互不阻塞。</p>
       </div>
       <div class="status">
         <div>页面: <strong>app/index.html</strong></div>
@@ -185,16 +199,29 @@ def render_unified_app() -> str:
       </div>
     </div>
 
-    <div class="tabs" id="tabs">
-      <button class="tab-btn active" data-tab="dragon_query">龙虎榜查询</button>
-      <button class="tab-btn" data-tab="dragon_graph">龙虎榜关系网</button>
-      <button class="tab-btn" data-tab="market_hot">热度图</button>
+    <div class="workspace-tabs" id="workspaceTabs">
+      <button class="workspace-btn active" data-workspace="dragon" data-default-tab="dragon_query">龙虎榜</button>
+      <button class="workspace-btn" data-workspace="market" data-default-tab="market_hot">市场热度</button>
+      <button class="workspace-btn" data-workspace="industry" data-default-tab="market_industry">行业观察</button>
+      <button class="workspace-btn" data-workspace="stock" data-default-tab="stock_news">个股研判</button>
+    </div>
+
+    <div class="tabs active" data-workspace="dragon">
+      <button class="tab-btn active" data-tab="dragon_query">明细查询</button>
+      <button class="tab-btn" data-tab="dragon_graph">关系网络</button>
+    </div>
+    <div class="tabs" data-workspace="market">
+      <button class="tab-btn" data-tab="market_hot">3D 热度</button>
       <button class="tab-btn" data-tab="stock_super_graph">全 A 图谱</button>
-      <button class="tab-btn" data-tab="china_city_bubble">城市气泡图</button>
+      <button class="tab-btn" data-tab="china_city_bubble">城市气泡</button>
+    </div>
+    <div class="tabs" data-workspace="industry">
+      <button class="tab-btn" data-tab="market_industry">强弱排行</button>
       <button class="tab-btn" data-tab="market_calendar">行业日历</button>
-      <button class="tab-btn" data-tab="market_industry">行业强弱</button>
+    </div>
+    <div class="tabs" data-workspace="stock">
       <button class="tab-btn" data-tab="stock_news">个股新闻</button>
-      <button class="tab-btn" data-tab="ai_analysis">🤖 AI 分析</button>
+      <button class="tab-btn" data-tab="ai_analysis">AI 分析</button>
     </div>
 
     <section class="panel active" id="panel-dragon_query">
@@ -271,14 +298,27 @@ def render_unified_app() -> str:
     function flattenByDate(map, range) {
       return range.flatMap(date => (map[date] || []).map(row => ({ ...row, date: row.date || date })));
     }
+    function activateTab(name) {
+      const btn = document.querySelector(`.tab-btn[data-tab="${name}"]`);
+      if (!btn) return;
+      const workspace = btn.closest('.tabs')?.dataset.workspace || '';
+      document.querySelectorAll('.workspace-btn').forEach(x => x.classList.toggle('active', x.dataset.workspace === workspace));
+      document.querySelectorAll('.tabs').forEach(x => x.classList.toggle('active', x.dataset.workspace === workspace));
+      document.querySelectorAll('.tab-btn').forEach(x => x.classList.toggle('active', x.dataset.tab === name));
+      document.querySelectorAll('.panel').forEach(x => x.classList.remove('active'));
+      document.getElementById(`panel-${name}`).classList.add('active');
+      loadTab(name);
+    }
     function bindTabs() {
+      document.querySelectorAll('.workspace-btn').forEach(btn => {
+        btn.addEventListener('click', () => {
+          const activeChild = document.querySelector(`.tabs[data-workspace="${btn.dataset.workspace}"] .tab-btn.active`);
+          activateTab(activeChild?.dataset.tab || btn.dataset.defaultTab);
+        });
+      });
       document.querySelectorAll('.tab-btn').forEach(btn => {
         btn.addEventListener('click', () => {
-          document.querySelectorAll('.tab-btn').forEach(x => x.classList.remove('active'));
-          document.querySelectorAll('.panel').forEach(x => x.classList.remove('active'));
-          btn.classList.add('active');
-          document.getElementById(`panel-${btn.dataset.tab}`).classList.add('active');
-          loadTab(btn.dataset.tab);
+          activateTab(btn.dataset.tab);
         });
       });
     }
