@@ -267,6 +267,20 @@
       const n = Number(v || 0);
       return n >= 10000 ? (n / 10000).toFixed(2) + '亿' : n.toFixed(2) + '万';
     }
+    function fmtYuanAmount(v) {
+      const n = Number(v || 0);
+      if (Math.abs(n) >= 1000000000000) return (n / 1000000000000).toFixed(2) + '万亿';
+      if (Math.abs(n) >= 100000000) return (n / 100000000).toFixed(2) + '亿';
+      if (Math.abs(n) >= 10000) return (n / 10000).toFixed(2) + '万';
+      return n.toFixed(2) + '元';
+    }
+    function formatMetricValue(field, value) {
+      if (field === 'amount') return fmtYuanAmount(value);
+      if (['latest_price','change_amount','buy_price','sell_price','prev_close','open_price','high_price','low_price'].includes(field)) {
+        return Number(value || 0).toFixed(2) + '元';
+      }
+      return Number(value || 0).toFixed(2);
+    }
     function escapeHtml(text) {
       return String(text ?? '').replace(/[&<>"']/g, s => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[s]));
     }
@@ -387,9 +401,9 @@
           <button id="dq-clear">清空</button>
         </div>
         <div class="grid">
-          <div class="card split-2"><div class="muted" style="margin-bottom:10px;">活跃股票</div><table><thead><tr><th>股票</th><th>席位数</th><th>买入</th><th>卖出</th></tr></thead><tbody id="dq-stocks"></tbody></table></div>
-          <div class="card split-2"><div class="muted" style="margin-bottom:10px;">活跃席位</div><table><thead><tr><th>席位</th><th>类型</th><th>次数</th><th>净额</th></tr></thead><tbody id="dq-seats"></tbody></table></div>
-          <div class="card"><div class="muted" style="margin-bottom:10px;">查询结果</div><table><thead><tr><th>股票</th><th>席位</th><th>方向</th><th>金额</th></tr></thead><tbody id="dq-results"></tbody></table></div>
+          <div class="card split-2"><div class="muted" style="margin-bottom:10px;">活跃股票</div><table><thead><tr><th>股票</th><th>席位数</th><th>买入金额(万元/亿元)</th><th>卖出金额(万元/亿元)</th></tr></thead><tbody id="dq-stocks"></tbody></table></div>
+          <div class="card split-2"><div class="muted" style="margin-bottom:10px;">活跃席位</div><table><thead><tr><th>席位</th><th>类型</th><th>次数</th><th>净额(万元/亿元)</th></tr></thead><tbody id="dq-seats"></tbody></table></div>
+          <div class="card"><div class="muted" style="margin-bottom:10px;">查询结果</div><table><thead><tr><th>股票</th><th>席位</th><th>方向</th><th>金额(万元/亿元)</th></tr></thead><tbody id="dq-results"></tbody></table></div>
         </div>`;
 
       const allData = payload.all_operations || {};
@@ -433,9 +447,9 @@
         document.getElementById('dq-stock-count').textContent = new Set(ops.map(x => x.stockCode)).size;
         document.getElementById('dq-seat-count').textContent = new Set(ops.map(x => x.seatName)).size;
         document.getElementById('dq-total').textContent = ops.length;
-        document.getElementById('dq-stocks').innerHTML = stockRows.slice(0, 12).map(x => `<tr><td>${escapeHtml(x.name)} (${escapeHtml(x.code)})</td><td>${x.seatCount}</td><td class="buy">${x.buy.toFixed(2)}</td><td class="sell">${x.sell.toFixed(2)}</td></tr>`).join('');
-        document.getElementById('dq-seats').innerHTML = seatRows.slice(0, 12).map(x => `<tr><td>${escapeHtml(x.name)}</td><td>${escapeHtml(x.type || '-')}</td><td>${x.count}</td><td class="${x.net >= 0 ? 'buy' : 'sell'}">${x.net.toFixed(2)}</td></tr>`).join('');
-        document.getElementById('dq-results').innerHTML = ops.slice(0, 120).map(x => `<tr><td>${escapeHtml(x.date)}<br>${escapeHtml(x.stockName)} (${escapeHtml(x.stockCode)})</td><td>${escapeHtml(x.seatName)}</td><td class="${x.direction === '买' ? 'buy' : 'sell'}">${x.direction}</td><td>${Number(x.amount || 0).toFixed(2)}</td></tr>`).join('');
+        document.getElementById('dq-stocks').innerHTML = stockRows.slice(0, 12).map(x => `<tr><td>${escapeHtml(x.name)} (${escapeHtml(x.code)})</td><td>${x.seatCount}</td><td class="buy">${fmtAmount(x.buy)}</td><td class="sell">${fmtAmount(x.sell)}</td></tr>`).join('');
+        document.getElementById('dq-seats').innerHTML = seatRows.slice(0, 12).map(x => `<tr><td>${escapeHtml(x.name)}</td><td>${escapeHtml(x.type || '-')}</td><td>${x.count}</td><td class="${x.net >= 0 ? 'buy' : 'sell'}">${fmtAmount(x.net)}</td></tr>`).join('');
+        document.getElementById('dq-results').innerHTML = ops.slice(0, 120).map(x => `<tr><td>${escapeHtml(x.date)}<br>${escapeHtml(x.stockName)} (${escapeHtml(x.stockCode)})</td><td>${escapeHtml(x.seatName)}</td><td class="${x.direction === '买' ? 'buy' : 'sell'}">${x.direction}</td><td>${fmtAmount(x.amount)}</td></tr>`).join('');
       }
 
       document.getElementById('dq-search').addEventListener('click', draw);
@@ -562,7 +576,7 @@
           <button id="mh-reset">重置</button>
         </div>
         <div class="card"><div id="mh-chart" class="chart"></div></div>
-        <div class="card" style="margin-top:16px;"><table><thead><tr><th>股票</th><th>行业</th><th>交易所</th><th>关注</th><th>讨论</th><th>交易</th><th>涨跌幅</th><th>成交额</th></tr></thead><tbody id="mh-table"></tbody></table></div>`;
+        <div class="card" style="margin-top:16px;"><table><thead><tr><th>股票</th><th>行业</th><th>交易所</th><th>关注</th><th>讨论</th><th>交易</th><th>涨跌幅</th><th>成交额(元/万元/亿元)</th></tr></thead><tbody id="mh-table"></tbody></table></div>`;
       const chart = echarts.init(document.getElementById('mh-chart'));
       function fillMarketHotFilters() {
         records = flattenByDate(recordsByDate, selectedDateRange('mh', dates));
@@ -595,14 +609,14 @@
         document.getElementById('mh-record-count').textContent = filtered.length;
         document.getElementById('mh-industry-count').textContent = new Set(filtered.map(x => x.industry)).size;
         document.getElementById('mh-exchange-count').textContent = new Set(filtered.map(x => x.exchange)).size;
-        document.getElementById('mh-table').innerHTML = filtered.slice(0, 150).map(x => `<tr><td>${escapeHtml(x.date)}<br>${escapeHtml(x.stock_name)} (${escapeHtml(x.stock_code)})</td><td>${escapeHtml(x.industry)}</td><td>${escapeHtml(x.exchange)}</td><td>${Number(x.follow_rank || 0).toFixed(1)}</td><td>${Number(x.tweet_rank || 0).toFixed(1)}</td><td>${Number(x.deal_rank || 0).toFixed(1)}</td><td class="${Number(x.change_pct || 0) >= 0 ? 'buy' : 'sell'}">${Number(x.change_pct || 0).toFixed(2)}%</td><td>${Number(x.amount || 0).toFixed(0)}</td></tr>`).join('');
+        document.getElementById('mh-table').innerHTML = filtered.slice(0, 150).map(x => `<tr><td>${escapeHtml(x.date)}<br>${escapeHtml(x.stock_name)} (${escapeHtml(x.stock_code)})</td><td>${escapeHtml(x.industry)}</td><td>${escapeHtml(x.exchange)}</td><td>${Number(x.follow_rank || 0).toFixed(1)}</td><td>${Number(x.tweet_rank || 0).toFixed(1)}</td><td>${Number(x.deal_rank || 0).toFixed(1)}</td><td class="${Number(x.change_pct || 0) >= 0 ? 'buy' : 'sell'}">${Number(x.change_pct || 0).toFixed(2)}%</td><td>${fmtYuanAmount(x.amount)}</td></tr>`).join('');
         if (!filtered.length) {
           chart.clear();
           return;
         }
         chart.setOption({
           tooltip: {
-            formatter: p => `${escapeHtml(p.data.stock_name)} (${escapeHtml(p.data.stock_code)})<br/>行业: ${escapeHtml(p.data.industry)}<br/>交易所: ${escapeHtml(p.data.exchange)}<br/>${escapeHtml(numericFields[xField])}: ${Number(p.data.raw[xField] || 0).toFixed(2)}<br/>${escapeHtml(numericFields[yField])}: ${Number(p.data.raw[yField] || 0).toFixed(2)}<br/>${escapeHtml(numericFields[zField])}: ${Number(p.data.raw[zField] || 0).toFixed(2)}`,
+            formatter: p => `${escapeHtml(p.data.stock_name)} (${escapeHtml(p.data.stock_code)})<br/>行业: ${escapeHtml(p.data.industry)}<br/>交易所: ${escapeHtml(p.data.exchange)}<br/>${escapeHtml(numericFields[xField])}: ${formatMetricValue(xField, p.data.raw[xField])}<br/>${escapeHtml(numericFields[yField])}: ${formatMetricValue(yField, p.data.raw[yField])}<br/>${escapeHtml(numericFields[zField])}: ${formatMetricValue(zField, p.data.raw[zField])}`,
           },
           visualMap: { dimension: 2, min: Math.min(...filtered.map(x => Number(x[zField] || 0)), 0), max: Math.max(...filtered.map(x => Number(x[zField] || 0)), 1), calculable: true, orient: 'horizontal', left: 'center', bottom: 0 },
           xAxis3D: { name: numericFields[xField] || xField },
@@ -669,6 +683,7 @@
           .sg-checks{display:flex;gap:10px;flex-wrap:wrap;margin-bottom:12px;}
           .sg-checks label{display:flex;align-items:center;gap:5px;background:#fff;border:1px solid var(--line);border-radius:999px;padding:7px 10px;font-size:12px;}
           .sg-checks input{padding:0;}
+          .sg-toolbar-title{font-size:12px;color:var(--muted);margin:2px 0 8px;}
           @media (max-width:1100px){.sg-layout{grid-template-columns:1fr;}.sg-side{max-height:none;}.sg-chart{height:620px;}}
         </style>`;
       root.innerHTML = styles + `
@@ -681,18 +696,24 @@
         <div class="filters">
           ${dateRangeControls('sg', dates, defaultStart, defaultEnd)}
           <input id="sg-keyword" placeholder="股票、行业、席位、新闻关键词">
+          <select id="sg-stock"><option value="">选择股票</option></select>
           <select id="sg-industry"><option value="">全部行业</option></select>
           <select id="sg-exchange"><option value="">全部交易所</option></select>
           <select id="sg-scale">
+            <option value="300">核心300节点</option>
+            <option value="500" selected>核心500节点</option>
             <option value="800">核心800节点</option>
-            <option value="1500" selected>核心1500节点</option>
+            <option value="1500">核心1500节点</option>
             <option value="3000">核心3000节点</option>
             <option value="all">尽量全量</option>
           </select>
           <button class="primary" id="sg-run">刷新</button>
           <button id="sg-reset">重置</button>
         </div>
+        <div class="sg-toolbar-title">节点类型</div>
         <div class="sg-checks" id="sg-category-checks"></div>
+        <div class="sg-toolbar-title">关系类型</div>
+        <div class="sg-checks" id="sg-relation-checks"></div>
         <div class="sg-layout">
           <div class="sg-chart-wrap"><div id="sg-chart" class="sg-chart"></div></div>
           <aside class="sg-side">
@@ -701,8 +722,13 @@
           </aside>
         </div>`;
 
+      const defaultCategories = new Set(['stock','industry','exchange','trade_state','trade_bucket','seat','trader']);
+      const defaultRelations = new Set(['stock_industry','stock_exchange','stock_trade_state','stock_trade_bucket','seat_stock_trade','trader_seat_alias']);
       document.getElementById('sg-category-checks').innerHTML = categories.map(c => `
-        <label><input type="checkbox" class="sg-cat" value="${escapeHtml(c.key)}" checked>${escapeHtml(c.name)}</label>
+        <label><input type="checkbox" class="sg-cat" value="${escapeHtml(c.key)}" ${defaultCategories.has(c.key) ? 'checked' : ''}>${escapeHtml(c.name)}</label>
+      `).join('');
+      document.getElementById('sg-relation-checks').innerHTML = Object.entries(relationLabels).map(([key, label]) => `
+        <label><input type="checkbox" class="sg-rel" value="${escapeHtml(key)}" ${defaultRelations.has(key) ? 'checked' : ''}>${escapeHtml(label)}</label>
       `).join('');
 
       const chart = echarts.init(document.getElementById('sg-chart'));
@@ -751,12 +777,29 @@
       function getCheckedCategories() {
         return new Set(Array.from(document.querySelectorAll('.sg-cat:checked')).map(x => x.value));
       }
+      function getCheckedRelations() {
+        return new Set(Array.from(document.querySelectorAll('.sg-rel:checked')).map(x => x.value));
+      }
       function fillFilters() {
         const g = graph();
+        const currentStock = document.getElementById('sg-stock').value;
+        const currentIndustry = document.getElementById('sg-industry').value;
+        const currentExchange = document.getElementById('sg-exchange').value;
+        const stocks = (g.nodes || [])
+          .filter(n => n.category === 'stock')
+          .sort((a, b) => String(a.attributes?.code || a.name).localeCompare(String(b.attributes?.code || b.name)));
         const industries = Array.from(new Set((g.nodes || []).filter(n => n.category === 'industry').map(n => n.name))).sort();
         const exchanges = Array.from(new Set((g.nodes || []).filter(n => n.category === 'exchange').map(n => n.name))).sort();
+        document.getElementById('sg-stock').innerHTML = '<option value="">选择股票</option>' + stocks.map(n => {
+          const code = n.attributes?.code || '';
+          const name = n.attributes?.stock_name || n.name;
+          return `<option value="${escapeHtml(n.id)}">${escapeHtml(code ? code + ' ' + name : name)}</option>`;
+        }).join('');
         document.getElementById('sg-industry').innerHTML = '<option value="">全部行业</option>' + industries.map(x => `<option value="${escapeHtml(x)}">${escapeHtml(x)}</option>`).join('');
         document.getElementById('sg-exchange').innerHTML = '<option value="">全部交易所</option>' + exchanges.map(x => `<option value="${escapeHtml(x)}">${escapeHtml(x)}</option>`).join('');
+        if (stocks.some(n => n.id === currentStock)) document.getElementById('sg-stock').value = currentStock;
+        if (industries.includes(currentIndustry)) document.getElementById('sg-industry').value = currentIndustry;
+        if (exchanges.includes(currentExchange)) document.getElementById('sg-exchange').value = currentExchange;
       }
       function nodeMatchesFilters(node, keyword, industry, exchange, checked) {
         if (!checked.has(node.category)) return false;
@@ -773,22 +816,38 @@
         }
         return true;
       }
-      function selectCore(g, keyword, industry, exchange, checked, scale) {
+      function selectCore(g, keyword, selectedStock, industry, exchange, checked, relChecked, scale) {
         const allNodes = g.nodes || [];
-        const allLinks = g.links || [];
-        let limit = scale === 'all' ? allNodes.length : Number(scale || 1500);
+        const nodeById = new Map(allNodes.map(n => [n.id, n]));
+        const allLinks = (g.links || []).filter(l => relChecked.has(l.type));
+        let limit = scale === 'all' ? allNodes.length : Number(scale || 500);
         const score = new Map(allNodes.map(n => [n.id, Number(n.value || 0)]));
         allLinks.forEach(l => {
           score.set(l.source, (score.get(l.source) || 0) + Number(l.value || 0) * 0.05);
           score.set(l.target, (score.get(l.target) || 0) + Number(l.value || 0) * 0.05);
         });
+        if (selectedStock) {
+          const selectedIds = new Set([selectedStock]);
+          allLinks
+            .filter(l => l.source === selectedStock || l.target === selectedStock)
+            .sort((a,b) => Number(b.value || 0) - Number(a.value || 0))
+            .slice(0, limit)
+            .forEach(l => {
+              const otherId = l.source === selectedStock ? l.target : l.source;
+              const other = nodeById.get(otherId);
+              if (other && checked.has(other.category)) selectedIds.add(otherId);
+            });
+          const nodes = allNodes.filter(n => selectedIds.has(n.id));
+          const links = allLinks.filter(l => selectedIds.has(l.source) && selectedIds.has(l.target));
+          return { nodes, links };
+        }
         const base = allNodes.filter(n => nodeMatchesFilters(n, keyword, industry, exchange, checked));
         const selectedIds = new Set(base.sort((a,b) => (score.get(b.id) || 0) - (score.get(a.id) || 0)).slice(0, limit).map(n => n.id));
         if (keyword || industry || exchange) {
           allLinks.forEach(l => {
             if (selectedIds.has(l.source) || selectedIds.has(l.target)) {
-              const s = allNodes.find(n => n.id === l.source);
-              const t = allNodes.find(n => n.id === l.target);
+              const s = nodeById.get(l.source);
+              const t = nodeById.get(l.target);
               if (s && checked.has(s.category)) selectedIds.add(s.id);
               if (t && checked.has(t.category)) selectedIds.add(t.id);
             }
@@ -802,11 +861,13 @@
         const range = selectedDateRange('sg', dates);
         const g = graph();
         const keyword = document.getElementById('sg-keyword').value.trim().toLowerCase();
+        const selectedStock = document.getElementById('sg-stock').value;
         const industry = document.getElementById('sg-industry').value;
         const exchange = document.getElementById('sg-exchange').value;
         const checked = getCheckedCategories();
+        const relChecked = getCheckedRelations();
         const scale = document.getElementById('sg-scale').value;
-        const view = selectCore(g, keyword, industry, exchange, checked, scale);
+        const view = selectCore(g, keyword, selectedStock, industry, exchange, checked, relChecked, scale);
         const catIndex = key => categoryByKey.get(key)?.idx ?? 0;
         const lineColor = rel => {
           if (rel === 'seat_stock_trade') return '#dc2626';
@@ -816,9 +877,9 @@
           return '#94a3b8';
         };
         document.getElementById('sg-date-v').textContent = dateRangeLabel(range);
-        document.getElementById('sg-stock-v').textContent = g.stats?.stock_count || 0;
+        document.getElementById('sg-stock-v').textContent = view.nodes.filter(n => n.category === 'stock').length;
         document.getElementById('sg-edge-v').textContent = view.links.length;
-        document.getElementById('sg-alt-v').textContent = `${g.stats?.seat_count || 0}/${g.stats?.news_count || 0}`;
+        document.getElementById('sg-alt-v').textContent = `${view.nodes.filter(n => n.category === 'seat').length}/${view.nodes.filter(n => n.category === 'news').length}`;
         chart.setOption({
           color: categories.map(c => c.color),
           tooltip: {
@@ -829,7 +890,7 @@
                 return `${escapeHtml(relationLabels[p.data.type] || p.data.type)}<br/>权重: ${Number(p.data.value || 0).toFixed(2)}${attrs.direction ? '<br/>方向: ' + escapeHtml(attrs.direction) : ''}${attrs.amount ? '<br/>金额: ' + fmtAmount(attrs.amount) : ''}`;
               }
               const a = p.data.attributes || {};
-              return `${escapeHtml(p.data.name)}<br/>类型: ${escapeHtml(categoryNames[p.data.category] || '')}${a.industry ? '<br/>行业: ' + escapeHtml(a.industry) : ''}${a.exchange ? '<br/>交易所: ' + escapeHtml(a.exchange) : ''}${a.change_pct != null ? '<br/>涨跌幅: ' + Number(a.change_pct).toFixed(2) + '%' : ''}${a.amount != null ? '<br/>成交额: ' + fmtAmount(Number(a.amount) / 10000) : ''}`;
+              return `${escapeHtml(p.data.name)}<br/>类型: ${escapeHtml(categoryNames[p.data.category] || '')}${a.industry ? '<br/>行业: ' + escapeHtml(a.industry) : ''}${a.exchange ? '<br/>交易所: ' + escapeHtml(a.exchange) : ''}${a.change_pct != null ? '<br/>涨跌幅: ' + Number(a.change_pct).toFixed(2) + '%' : ''}${a.amount != null ? '<br/>成交额: ' + fmtYuanAmount(a.amount) : ''}`;
             }
           },
           legend: [{ data: categoryNames, type: 'scroll', top: 0 }],
@@ -845,8 +906,9 @@
               position: 'right',
               formatter: p => {
                 const cat = categoryNames[p.data.category];
+                if (selectedStock && p.data.id === selectedStock) return (p.data.attributes?.stock_name || p.data.name).slice(0, 8);
                 if (['行业','交易所','涨跌状态','交易分层','游资别名'].includes(cat)) return p.data.name;
-                if (cat === '股票' && Number(p.data.value || 0) > 16) return (p.data.attributes?.stock_name || p.data.name).slice(0, 6);
+                if (!selectedStock && cat === '股票' && Number(p.data.value || 0) > 24) return (p.data.attributes?.stock_name || p.data.name).slice(0, 6);
                 return '';
               },
               fontSize: 10
@@ -889,17 +951,20 @@
       document.getElementById('sg-run').addEventListener('click', draw);
       document.getElementById('sg-reset').addEventListener('click', () => {
         document.getElementById('sg-keyword').value = '';
+        document.getElementById('sg-stock').value = '';
         document.getElementById('sg-industry').value = '';
         document.getElementById('sg-exchange').value = '';
-        document.getElementById('sg-scale').value = '1500';
-        document.querySelectorAll('.sg-cat').forEach(x => { x.checked = true; });
+        document.getElementById('sg-scale').value = '500';
+        document.querySelectorAll('.sg-cat').forEach(x => { x.checked = defaultCategories.has(x.value); });
+        document.querySelectorAll('.sg-rel').forEach(x => { x.checked = defaultRelations.has(x.value); });
         currentFocus = null;
         document.getElementById('sg-detail').innerHTML = '点击图中的节点查看属性和强关联边。';
         draw();
       });
       document.getElementById('sg-keyword').addEventListener('keyup', e => { if (e.key === 'Enter') draw(); });
-      ['sg-industry','sg-exchange','sg-scale'].forEach(id => document.getElementById(id).addEventListener('change', draw));
+      ['sg-stock','sg-industry','sg-exchange','sg-scale'].forEach(id => document.getElementById(id).addEventListener('change', draw));
       document.querySelectorAll('.sg-cat').forEach(x => x.addEventListener('change', draw));
+      document.querySelectorAll('.sg-rel').forEach(x => x.addEventListener('change', draw));
       chart.on('click', params => {
         if (params.dataType === 'node') {
           currentFocus = params.data.id;

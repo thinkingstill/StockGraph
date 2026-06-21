@@ -349,9 +349,9 @@ bash dev_start.sh
 启动脚本会执行：
 
 1. 初始化数据库 schema
-2. 生成龙虎榜查询页和综合分析页
-3. 默认尝试同步市场概览
-4. 生成统一开发首页
+2. 如果本地 SQLite 不存在，自动从已提交的 JSON 产出离线回填
+3. 生成龙虎榜查询页和综合分析页
+4. 复用 `data/market_overview/` 与 `outputs/dragon_tiger/` 中已有产出生成统一开发首页
 5. 启动本地静态服务
 
 默认访问地址：
@@ -364,10 +364,14 @@ bash dev_start.sh
   - 对容器或局域网开放访问
 - `PORT=8031`
   - 自定义端口
-- `SYNC_MARKET_OVERVIEW=0`
-  - 启动时跳过市场概览同步
+- `SYNC_MARKET_OVERVIEW=1`
+  - 启动时同步市场概览，会访问 akshare/行情源；默认关闭，复用已有 JSON
 - `SYNC_DRAGON_TIGER=1`
-  - 启动时顺便同步龙虎榜最新数据
+  - 启动时同步龙虎榜最新数据，会访问 akshare；默认关闭，复用已有 JSON/数据库
+- `BACKFILL_FROM_JSON=1`
+  - 强制从现有 JSON 产出回填本地 SQLite；默认 `auto`，仅在数据库不存在时回填
+- `BACKFILL_AREAS=dragon_tiger,graphs`
+  - 限制离线回填范围；默认 `all`
 
 开发首页会聚合这些页面：
 
