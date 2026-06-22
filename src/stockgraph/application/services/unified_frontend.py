@@ -778,7 +778,7 @@ class UnifiedFrontendService:
         dates = self.dragon_tiger_repository.list_trade_dates()
         dt_codes: list[str] = []
         if dates:
-            active = self.dragon_tiger_repository.aggregate_active_stocks(dates[0], limit=30)
+            active = self.dragon_tiger_repository.aggregate_active_stocks(dates[0], limit=100)
             dt_codes = [s["code"] for s in active]
 
         # 新闻股票优先，再补充龙虎榜活跃股票
@@ -795,10 +795,21 @@ class UnifiedFrontendService:
         # 预加载龙虎榜数据集（避免重复加载）
         dragon_dataset = self.dragon_tiger_repository.export_query_dataset() if dates else {}
 
+        # 加载股票基本信息（用于获取名称）
+        stock_basic_info = self._load_stock_basic_info()
+
         # 构建每只股票的上下文数据
         stock_contexts: dict[str, dict] = {}
-        for code in stock_codes[:50]:  # 最多50只
+        stock_names: dict[str, str] = {}
+        max_stocks = min(len(stock_codes), 200)  # 最多200只
+        
+        for code in stock_codes[:max_stocks]:
             ctx: dict = {"code": code}
+
+            # 从基本信息中获取股票名称
+            basic = stock_basic_info.get(code, {})
+            if basic.get("stock_name"):
+                stock_names[code] = basic["stock_name"]
 
             # 新闻数据
             news = self.news_repository.query_news_by_stock(code, limit=15)
@@ -825,13 +836,17 @@ class UnifiedFrontendService:
                         "date": date,
                         "operations": stock_ops[:10],
                     })
+                    # 从龙虎榜提取股票名称（备用）
+                    if not stock_names.get(code) and stock_ops[0].get("stockName"):
+                        stock_names[code] = stock_ops[0]["stockName"]
             if dragon_records:
                 ctx["dragon_tiger"] = dragon_records
 
             stock_contexts[code] = ctx
 
         payload = {
-            "stock_codes": stock_codes[:50],
+            "stock_codes": stock_codes[:max_stocks],
+            "stock_names": stock_names,
             "stock_contexts": stock_contexts,
         }
         return self._write_section("ai_analysis.json", payload)

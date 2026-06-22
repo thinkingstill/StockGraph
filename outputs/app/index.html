@@ -1706,186 +1706,290 @@
       const totalArticles = payload.total_articles || 0;
       const stockCodes = payload.stock_codes || [];
 
-      if (!summaries.length) {
-        root.innerHTML = '<div class="empty">暂无个股新闻数据，请先运行新闻同步</div>';
-        return;
-      }
+      // 获取股票名称映射（从 AI 分析数据或其他来源）
+      const stockNameMap = {};
+      // 尝试从 summaries 中获取名称
+      summaries.forEach(s => {
+        if (s.stock_name) stockNameMap[s.stock_code] = s.stock_name;
+      });
 
       const styles = `
         <style>
-          .news-toolbar{display:flex;gap:10px;flex-wrap:wrap;margin-bottom:16px;align-items:center;}
-          .news-toolbar select,.news-toolbar input{min-width:160px;}
-          .news-stats{display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:12px;margin-bottom:16px;}
-          .news-stat{background:#f8faf7;border:1px solid var(--line);border-radius:16px;padding:14px;}
-          .news-stat .k{font-size:12px;color:var(--muted);margin-bottom:6px;}
-          .news-stat .v{font-size:24px;font-weight:700;}
-          .news-stock-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(280px,1fr));gap:14px;margin-bottom:20px;}
-          .news-stock-card{background:#fff;border:1px solid var(--line);border-radius:16px;padding:14px;cursor:pointer;transition:all 0.2s;}
-          .news-stock-card:hover{border-color:var(--accent);box-shadow:0 4px 16px rgba(22,78,99,0.1);}
-          .news-stock-card.selected{border-color:var(--accent);background:#f0f7f4;}
-          .news-stock-card .stock-header{display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;}
-          .news-stock-card .stock-code{font-weight:700;font-size:15px;}
-          .news-stock-card .news-count{background:var(--accent);color:#fff;border-radius:999px;padding:2px 10px;font-size:12px;}
-          .news-stock-card .latest-title{font-size:13px;color:var(--muted);line-height:1.4;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden;}
-          .news-stock-card .latest-time{font-size:11px;color:#999;margin-top:6px;}
-          .sentiment-bar{display:flex;gap:6px;margin-top:8px;}
-          .sentiment-tag{font-size:11px;padding:2px 8px;border-radius:999px;}
-          .sentiment-tag.positive{background:#dcfce7;color:#166534;}
-          .sentiment-tag.negative{background:#fee2e2;color:#991b1b;}
-          .sentiment-tag.neutral{background:#f3f4f6;color:#6b7280;}
-          .news-detail{margin-top:16px;}
-          .news-detail-header{display:flex;justify-content:space-between;align-items:center;margin-bottom:14px;}
-          .news-detail-header h3{margin:0;font-size:18px;}
-          .news-detail-header .back-btn{border:1px solid var(--line);background:#fff;border-radius:12px;padding:8px 14px;cursor:pointer;font-size:13px;}
-          .news-timeline{position:relative;padding-left:24px;}
-          .news-timeline::before{content:'';position:absolute;left:8px;top:0;bottom:0;width:2px;background:var(--line);}
-          .news-item{position:relative;margin-bottom:16px;padding:14px;background:#fff;border:1px solid var(--line);border-radius:14px;}
-          .news-item::before{content:'';position:absolute;left:-20px;top:18px;width:10px;height:10px;border-radius:50%;background:var(--accent);border:2px solid #fff;}
-          .news-item .news-title{font-weight:600;font-size:14px;margin-bottom:6px;line-height:1.4;}
-          .news-item .news-title a{color:var(--text);text-decoration:none;}
-          .news-item .news-title a:hover{color:var(--accent);text-decoration:underline;}
-          .news-item .news-meta{display:flex;gap:12px;flex-wrap:wrap;font-size:12px;color:var(--muted);margin-bottom:6px;}
-          .news-item .news-content{font-size:13px;color:#444;line-height:1.6;display:-webkit-box;-webkit-line-clamp:3;-webkit-box-orient:vertical;overflow:hidden;}
-          .news-item .news-content.expanded{-webkit-line-clamp:unset;}
-          .news-item .expand-btn{font-size:12px;color:var(--accent);cursor:pointer;margin-top:4px;border:none;background:none;padding:0;}
-          .news-overview{margin-top:16px;}
-          .news-overview .overview-title{font-size:16px;font-weight:700;margin-bottom:12px;}
-          .news-overview .all-news-list .news-item{margin-bottom:12px;}
+          .sn-layout{display:grid;grid-template-columns:320px 1fr;gap:20px;align-items:start;}
+          .sn-left{display:flex;flex-direction:column;gap:14px;position:sticky;top:20px;}
+          .sn-right{display:flex;flex-direction:column;gap:14px;}
+          .sn-card{background:var(--card);border:1px solid var(--line);border-radius:16px;padding:16px;}
+          .sn-card h4{margin:0 0 12px;font-size:14px;color:var(--accent);}
+          .sn-stock-input{width:100%;padding:10px 12px;font-size:14px;border:1px solid var(--line);border-radius:12px;}
+          .sn-date-row{display:flex;gap:10px;margin-top:10px;}
+          .sn-date-row input{flex:1;padding:8px 10px;font-size:13px;border:1px solid var(--line);border-radius:10px;}
+          .sn-crawl-btn{width:100%;margin-top:12px;padding:10px;font-size:14px;}
+          .sn-crawl-btn:disabled{opacity:0.6;cursor:not-allowed;}
+          .sn-crawl-status{margin-top:8px;font-size:12px;color:var(--muted);}
+          .sn-stats{display:grid;grid-template-columns:repeat(auto-fit,minmax(120px,1fr));gap:10px;margin-bottom:14px;}
+          .sn-stat{background:#f8faf7;border:1px solid var(--line);border-radius:12px;padding:12px;text-align:center;}
+          .sn-stat .k{font-size:11px;color:var(--muted);margin-bottom:4px;}
+          .sn-stat .v{font-size:20px;font-weight:700;}
+          .sn-toolbar{display:flex;gap:10px;flex-wrap:wrap;margin-bottom:14px;align-items:center;}
+          .sn-toolbar select,.sn-toolbar input{min-width:140px;}
+          .sn-news-list{max-height:70vh;overflow-y:auto;}
+          .sn-news-item{padding:14px;border-bottom:1px solid #edf0e8;transition:background 0.2s;}
+          .sn-news-item:hover{background:#f8faf7;}
+          .sn-news-item:last-child{border-bottom:none;}
+          .sn-news-title{font-weight:600;font-size:14px;margin-bottom:6px;line-height:1.4;}
+          .sn-news-title a{color:var(--text);text-decoration:none;}
+          .sn-news-title a:hover{color:var(--accent);text-decoration:underline;}
+          .sn-news-meta{display:flex;gap:10px;flex-wrap:wrap;font-size:11px;color:var(--muted);margin-bottom:6px;}
+          .sn-news-content{font-size:13px;color:#444;line-height:1.6;display:-webkit-box;-webkit-line-clamp:3;-webkit-box-orient:vertical;overflow:hidden;}
+          .sn-news-content.expanded{-webkit-line-clamp:unset;}
+          .sn-expand-btn{font-size:12px;color:var(--accent);cursor:pointer;margin-top:4px;border:none;background:none;padding:0;}
+          .sn-sentiment-tag{font-size:10px;padding:2px 6px;border-radius:999px;}
+          .sn-sentiment-tag.positive{background:#dcfce7;color:#166534;}
+          .sn-sentiment-tag.negative{background:#fee2e2;color:#991b1b;}
+          .sn-sentiment-tag.neutral{background:#f3f4f6;color:#6b7280;}
+          .sn-loading{display:flex;align-items:center;justify-content:center;gap:8px;padding:20px;color:var(--muted);}
+          .sn-loading-dot{width:6px;height:6px;background:var(--accent);border-radius:50%;animation:sn-bounce 1.4s ease-in-out infinite;}
+          .sn-loading-dot:nth-child(2){animation-delay:0.2s;}
+          .sn-loading-dot:nth-child(3){animation-delay:0.4s;}
+          @keyframes sn-bounce{0%,80%,100%{transform:scale(0.6);opacity:0.4}40%{transform:scale(1);opacity:1}}
+          .sn-empty{padding:40px;text-align:center;color:var(--muted);border:1px dashed var(--line);border-radius:16px;background:#fafbf8;}
+          @media(max-width:1100px){.sn-layout{grid-template-columns:1fr;}.sn-left{position:static;}}
         </style>`;
 
-      // 概览模式：显示股票卡片列表
-      function renderOverview() {
+      // 从 URL 获取 API 基础地址
+      const apiBase = window.location.origin;
+
+      // 检测是否为 GitHub Pages 环境
+      const isGitHubPages = window.location.hostname.endsWith('.github.io');
+
+      // 当前状态
+      let currentStockCode = '';
+      let currentNews = [];
+      let isCrawling = false;
+
+      function renderPage() {
+        const crawlBtnDisabled = isGitHubPages ? 'disabled' : '';
+        const crawlBtnText = isGitHubPages ? '采集新闻（仅本地可用）' : '采集新闻';
+        const crawlHint = isGitHubPages
+          ? '<div class="sn-crawl-status" style="color:var(--muted);">GitHub Pages 环境不支持实时采集，数据由定时任务自动更新</div>'
+          : '<div id="sn-crawl-status" class="sn-crawl-status"></div>';
+
         root.innerHTML = styles + `
-          <div class="news-stats">
-            <div class="news-stat"><div class="k">关联股票</div><div class="v">${stockCodes.length}</div></div>
-            <div class="news-stat"><div class="k">新闻总数</div><div class="v">${totalArticles}</div></div>
-            <div class="news-stat"><div class="k">数据来源</div><div class="v" style="font-size:14px;">akshare</div></div>
-          </div>
-          <div class="news-toolbar">
-            <input id="sn-search" placeholder="搜索股票代码或名称">
-            <select id="sn-sentiment">
-              <option value="">全部情绪</option>
-              <option value="利好">利好</option>
-              <option value="利空">利空</option>
-              <option value="中性">中性</option>
-            </select>
-            <button class="primary" id="sn-filter-btn">筛选</button>
-          </div>
-          <div class="news-stock-grid" id="sn-grid"></div>
-          <div class="news-overview" id="sn-overview">
-            <div class="overview-title">全部最新新闻</div>
-            <div class="all-news-list" id="sn-all-news"></div>
-          </div>`;
-
-        function drawCards() {
-          const kw = document.getElementById('sn-search').value.trim().toLowerCase();
-          const sentiment = document.getElementById('sn-sentiment').value;
-          const filtered = summaries.filter(s => {
-            const matchKw = !kw || s.stock_code.includes(kw);
-            const matchSentiment = !sentiment || (s.sentiment_summary[sentiment] || 0) > 0;
-            return matchKw && matchSentiment;
-          });
-
-          document.getElementById('sn-grid').innerHTML = filtered.map(s => {
-            const ss = s.sentiment_summary || {};
-            const tags = [];
-            if (ss['利好'] > 0) tags.push(`<span class="sentiment-tag positive">利好${ss['利好']}</span>`);
-            if (ss['利空'] > 0) tags.push(`<span class="sentiment-tag negative">利空${ss['利空']}</span>`);
-            if (ss['中性'] > 0) tags.push(`<span class="sentiment-tag neutral">中性${ss['中性']}</span>`);
-            return `<div class="news-stock-card" data-code="${escapeHtml(s.stock_code)}">
-              <div class="stock-header">
-                <span class="stock-code">${escapeHtml(s.stock_code)}</span>
-                <span class="news-count">${s.news_count}条</span>
+          <h3 style="margin:0 0 16px;">个股新闻</h3>
+          <div class="sn-layout">
+            <div class="sn-left">
+              <div class="sn-card">
+                <h4>新闻采集</h4>
+                <div>
+                  <label style="font-size:12px;color:var(--muted);display:block;margin-bottom:4px;">股票代码</label>
+                  <input id="sn-stock-input" class="sn-stock-input" placeholder="输入股票代码，如 000001" value="${escapeHtml(currentStockCode)}">
+                </div>
+                <div class="sn-date-row">
+                  <div>
+                    <label style="font-size:12px;color:var(--muted);display:block;margin-bottom:4px;">开始日期</label>
+                    <input type="date" id="sn-start-date">
+                  </div>
+                  <div>
+                    <label style="font-size:12px;color:var(--muted);display:block;margin-bottom:4px;">结束日期</label>
+                    <input type="date" id="sn-end-date">
+                  </div>
+                </div>
+                <button class="primary sn-crawl-btn" id="sn-crawl-btn" ${crawlBtnDisabled}>${crawlBtnText}</button>
+                ${crawlHint}
               </div>
-              <div class="latest-title">${escapeHtml(s.latest_news)}</div>
-              <div class="sentiment-bar">${tags.join('')}</div>
-              <div class="latest-time">${escapeHtml(s.latest_time)}</div>
-            </div>`;
-          }).join('');
-
-          // 显示全部最新新闻（取每个股票的第一条）
-          const allLatest = [];
-          for (const code of Object.keys(stockNews)) {
-            const news = stockNews[code];
-            if (news && news.length) {
-              allLatest.push({...news[0], stock_code: code});
-            }
-          }
-          allLatest.sort((a, b) => (b.published_at || '').localeCompare(a.published_at || ''));
-          document.getElementById('sn-all-news').innerHTML = allLatest.slice(0, 30).map(n => renderNewsItem(n)).join('');
-
-          // 绑定卡片点击
-          document.querySelectorAll('.news-stock-card').forEach(card => {
-            card.addEventListener('click', () => {
-              const code = card.dataset.code;
-              renderDetail(code);
-            });
-          });
-        }
-
-        document.getElementById('sn-filter-btn').addEventListener('click', drawCards);
-        document.getElementById('sn-search').addEventListener('keyup', e => { if (e.key === 'Enter') drawCards(); });
-        drawCards();
-      }
-
-      // 详情模式：显示某只股票的新闻时间线
-      function renderDetail(stockCode) {
-        const news = stockNews[stockCode] || [];
-        const summary = summaries.find(s => s.stock_code === stockCode) || {};
-        const ss = summary.sentiment_summary || {};
-
-        root.innerHTML = styles + `
-          <div class="news-detail">
-            <div class="news-detail-header">
-              <h3>📰 ${escapeHtml(stockCode)} 相关新闻 <span style="font-size:14px;color:var(--muted);">(${news.length}条)</span></h3>
-              <button class="back-btn" id="sn-back">← 返回列表</button>
+              <div class="sn-card">
+                <h4>已有数据</h4>
+                <div class="sn-stats">
+                  <div class="sn-stat"><div class="k">股票数</div><div class="v">${stockCodes.length}</div></div>
+                  <div class="sn-stat"><div class="k">新闻数</div><div class="v">${totalArticles}</div></div>
+                </div>
+                <div style="max-height:300px;overflow-y:auto;">
+                  ${stockCodes.map(code => `
+                    <div class="sn-stock-item" data-code="${escapeHtml(code)}" style="padding:8px 10px;cursor:pointer;border-radius:8px;font-size:13px;${code === currentStockCode ? 'background:#f0f7f4;font-weight:600;' : ''}">
+                      ${escapeHtml(code)}${stockNameMap[code] ? ' - ' + escapeHtml(stockNameMap[code]) : ''}
+                      <span style="float:right;color:var(--muted);">${(stockNews[code] || []).length}条</span>
+                    </div>
+                  `).join('')}
+                </div>
+              </div>
             </div>
-            <div class="news-stats">
-              <div class="news-stat"><div class="k">新闻总数</div><div class="v">${news.length}</div></div>
-              <div class="news-stat"><div class="k">利好</div><div class="v" style="color:#166534;">${ss['利好'] || 0}</div></div>
-              <div class="news-stat"><div class="k">利空</div><div class="v" style="color:#991b1b;">${ss['利空'] || 0}</div></div>
-              <div class="news-stat"><div class="k">中性</div><div class="v" style="color:#6b7280;">${ss['中性'] || 0}</div></div>
+            <div class="sn-right">
+              <div id="sn-content-area"></div>
             </div>
-            <div class="news-timeline" id="sn-timeline"></div>
           </div>`;
 
-        document.getElementById('sn-timeline').innerHTML = news.map(n => renderNewsItem(n)).join('');
-        document.getElementById('sn-back').addEventListener('click', renderOverview);
+        // 绑定事件
+        if (!isGitHubPages) {
+          document.getElementById('sn-crawl-btn').addEventListener('click', handleCrawl);
+        }
+        document.getElementById('sn-stock-input').addEventListener('keyup', e => {
+          if (e.key === 'Enter') {
+            const code = e.target.value.trim();
+            if (code) loadStockNews(code);
+          }
+        });
 
-        // 绑定展开/收起按钮
-        document.querySelectorAll('.expand-btn').forEach(btn => {
-          btn.addEventListener('click', () => {
-            const content = btn.previousElementSibling;
-            if (content.classList.contains('expanded')) {
-              content.classList.remove('expanded');
-              btn.textContent = '展开全文';
-            } else {
-              content.classList.add('expanded');
-              btn.textContent = '收起';
-            }
+        // 绑定股票列表点击
+        document.querySelectorAll('.sn-stock-item').forEach(item => {
+          item.addEventListener('click', () => {
+            const code = item.dataset.code;
+            document.getElementById('sn-stock-input').value = code;
+            loadStockNews(code);
           });
         });
+
+        // 设置默认日期（最近7天）
+        const today = new Date();
+        const weekAgo = new Date(today);
+        weekAgo.setDate(weekAgo.getDate() - 7);
+        document.getElementById('sn-end-date').value = today.toISOString().split('T')[0];
+        document.getElementById('sn-start-date').value = weekAgo.toISOString().split('T')[0];
+
+        // 如果有当前股票，显示其新闻
+        if (currentStockCode && currentNews.length > 0) {
+          renderNewsList(currentStockCode, currentNews);
+        } else if (stockCodes.length > 0) {
+          // 默认显示第一只股票的新闻
+          loadStockNews(stockCodes[0]);
+        } else {
+          document.getElementById('sn-content-area').innerHTML = '<div class="sn-empty">暂无新闻数据，请先采集</div>';
+        }
+      }
+
+      function loadStockNews(code) {
+        currentStockCode = code;
+        currentNews = stockNews[code] || [];
+
+        // 更新左侧选中状态
+        document.querySelectorAll('.sn-stock-item').forEach(item => {
+          item.style.background = item.dataset.code === code ? '#f0f7f4' : '';
+          item.style.fontWeight = item.dataset.code === code ? '600' : '';
+        });
+
+        if (currentNews.length > 0) {
+          renderNewsList(code, currentNews);
+        } else {
+          document.getElementById('sn-content-area').innerHTML = `
+            <div class="sn-card">
+              <h4>${escapeHtml(code)} 新闻</h4>
+              <div class="sn-empty">暂无该股票的新闻数据，点击左侧"采集新闻"按钮获取</div>
+            </div>`;
+        }
+      }
+
+      function renderNewsList(code, news) {
+        const area = document.getElementById('sn-content-area');
+        area.innerHTML = `
+          <div class="sn-card">
+            <h4>${escapeHtml(code)} 新闻 <span style="font-size:12px;color:var(--muted);">(${news.length}条)</span></h4>
+            <div class="sn-toolbar">
+              <select id="sn-filter-sentiment">
+                <option value="">全部情绪</option>
+                <option value="利好">利好</option>
+                <option value="利空">利空</option>
+                <option value="中性">中性</option>
+              </select>
+              <input type="date" id="sn-filter-start" placeholder="开始日期">
+              <input type="date" id="sn-filter-end" placeholder="结束日期">
+              <button id="sn-filter-btn">筛选</button>
+            </div>
+            <div class="sn-news-list" id="sn-news-list"></div>
+          </div>`;
+
+        function drawNewsList() {
+          const sentiment = document.getElementById('sn-filter-sentiment').value;
+          const startDate = document.getElementById('sn-filter-start').value;
+          const endDate = document.getElementById('sn-filter-end').value;
+
+          let filtered = [...news];
+
+          if (sentiment) {
+            filtered = filtered.filter(n => n.sentiment === sentiment);
+          }
+          if (startDate) {
+            filtered = filtered.filter(n => (n.published_at || '') >= startDate);
+          }
+          if (endDate) {
+            filtered = filtered.filter(n => (n.published_at || '') <= endDate + ' 23:59:59');
+          }
+
+          document.getElementById('sn-news-list').innerHTML = filtered.length > 0
+            ? filtered.map(n => renderNewsItem(n)).join('')
+            : '<div class="sn-empty">没有符合条件的新闻</div>';
+        }
+
+        document.getElementById('sn-filter-btn').addEventListener('click', drawNewsList);
+        document.getElementById('sn-filter-sentiment').addEventListener('change', drawNewsList);
+        drawNewsList();
       }
 
       function renderNewsItem(n) {
         const sentimentClass = n.sentiment === '利好' ? 'positive' : n.sentiment === '利空' ? 'negative' : 'neutral';
-        const titleHtml = n.url ? `<a href="${escapeHtml(n.url)}" target="_blank" rel="noopener">${escapeHtml(n.title)}</a>` : escapeHtml(n.title);
+        const titleHtml = n.url
+          ? `<a href="${escapeHtml(n.url)}" target="_blank" rel="noopener">${escapeHtml(n.title)}</a>`
+          : escapeHtml(n.title);
         const meta = [];
-        if (n.published_at) meta.push(`🕐 ${escapeHtml(n.published_at)}`);
-        if (n.source) meta.push(`📰 ${escapeHtml(n.source)}`);
-        if (n.event_type && n.event_type !== '其他') meta.push(`📌 ${escapeHtml(n.event_type)}`);
-        if (n.sentiment) meta.push(`<span class="sentiment-tag ${sentimentClass}">${escapeHtml(n.sentiment)}</span>`);
+        if (n.published_at) meta.push(escapeHtml(n.published_at));
+        if (n.source) meta.push(escapeHtml(n.source));
+        if (n.event_type && n.event_type !== '其他') meta.push(escapeHtml(n.event_type));
+        if (n.sentiment) meta.push(`<span class="sn-sentiment-tag ${sentimentClass}">${escapeHtml(n.sentiment)}</span>`);
         const content = n.content || n.summary || '';
         const needExpand = content.length > 120;
-        return `<div class="news-item">
-          <div class="news-title">${titleHtml}</div>
-          <div class="news-meta">${meta.join('')}</div>
-          ${content ? `<div class="news-content">${escapeHtml(content)}</div>` : ''}
-          ${needExpand ? '<button class="expand-btn">展开全文</button>' : ''}
+        return `<div class="sn-news-item">
+          <div class="sn-news-title">${titleHtml}</div>
+          <div class="sn-news-meta">${meta.join('')}</div>
+          ${content ? `<div class="sn-news-content">${escapeHtml(content)}</div>` : ''}
+          ${needExpand ? '<button class="sn-expand-btn">展开全文</button>' : ''}
         </div>`;
       }
 
-      renderOverview();
+      async function handleCrawl() {
+        const code = document.getElementById('sn-stock-input').value.trim();
+        if (!code) {
+          alert('请输入股票代码');
+          return;
+        }
+
+        const startDate = document.getElementById('sn-start-date').value;
+        const endDate = document.getElementById('sn-end-date').value;
+        const statusEl = document.getElementById('sn-crawl-status');
+        const btn = document.getElementById('sn-crawl-btn');
+
+        isCrawling = true;
+        btn.disabled = true;
+        btn.textContent = '采集中...';
+        statusEl.innerHTML = '<div class="sn-loading"><div class="sn-loading-dot"></div><div class="sn-loading-dot"></div><div class="sn-loading-dot"></div><span>正在采集新闻...</span></div>';
+
+        try {
+          const response = await fetch(`${apiBase}/api/news/sync`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ codes: [code], limit: 30 })
+          });
+
+          const result = await response.json();
+
+          if (result.success) {
+            const inserted = result.result?.inserted || 0;
+            statusEl.innerHTML = `<span style="color:var(--success);">采集完成，新增 ${inserted} 条新闻</span>`;
+
+            // 重新加载页面数据
+            setTimeout(() => {
+              window.location.reload();
+            }, 1500);
+          } else {
+            statusEl.innerHTML = `<span style="color:var(--danger);">采集失败: ${escapeHtml(result.error || '未知错误')}</span>`;
+          }
+        } catch (err) {
+          statusEl.innerHTML = `<span style="color:var(--danger);">请求失败: ${escapeHtml(err.message)}</span>`;
+        } finally {
+          isCrawling = false;
+          btn.disabled = false;
+          btn.textContent = '采集新闻';
+        }
+      }
+
+      renderPage();
     }
 
     /* ==================== AI 分析 ==================== */
@@ -1897,6 +2001,17 @@
 
       const stockCodes = payload.stock_codes;
       const stockContexts = payload.stock_contexts || {};
+      const stockNames = payload.stock_names || {};
+
+      // 从上下文中补充股票名称
+      Object.entries(stockContexts).forEach(([code, ctx]) => {
+        if (!stockNames[code]) {
+          const dt = ctx.dragon_tiger || [];
+          if (dt.length > 0 && dt[0].operations && dt[0].operations.length > 0) {
+            stockNames[code] = dt[0].operations[0].stockName || '';
+          }
+        }
+      });
 
       // 从 localStorage 读取配置
       const savedBaseUrl = localStorage.getItem('ai_base_url') || '';
@@ -1904,13 +2019,19 @@
       const savedModel = localStorage.getItem('ai_model') || '';
 
       const styles = `<style>
-        .ai-config { display:grid; grid-template-columns:1fr 1fr 1fr auto; gap:10px; align-items:end; margin-bottom:18px; }
-        .ai-config label { display:block; font-size:12px; color:var(--muted); margin-bottom:4px; }
-        .ai-config input { width:100%; }
-        .ai-stock-bar { display:flex; gap:10px; align-items:center; flex-wrap:wrap; margin-bottom:16px; }
-        .ai-stock-bar select { min-width:200px; }
-        .ai-context { display:grid; grid-template-columns:1fr 1fr; gap:16px; margin-bottom:18px; }
-        .ai-context-card { background:#f8faf7; border:1px solid var(--line); border-radius:14px; padding:14px; max-height:320px; overflow-y:auto; }
+        .ai-layout { display:grid; grid-template-columns:340px 1fr; gap:20px; align-items:start; }
+        .ai-left { display:flex; flex-direction:column; gap:14px; position:sticky; top:20px; }
+        .ai-right { display:flex; flex-direction:column; gap:14px; }
+        .ai-card { background:var(--card); border:1px solid var(--line); border-radius:16px; padding:16px; }
+        .ai-card h4 { margin:0 0 12px; font-size:14px; color:var(--accent); display:flex; align-items:center; gap:6px; }
+        .ai-config-grid { display:grid; gap:10px; }
+        .ai-config-grid label { display:block; font-size:12px; color:var(--muted); margin-bottom:3px; }
+        .ai-config-grid input { width:100%; }
+        .ai-stock-select { width:100%; padding:10px 12px; font-size:14px; border:1px solid var(--line); border-radius:12px; }
+        .ai-prompt-card textarea { width:100%; min-height:100px; border:1px solid var(--line); border-radius:12px; padding:10px; font-size:13px; font-family:inherit; resize:vertical; }
+        .ai-actions { display:flex; gap:10px; margin-top:12px; }
+        .ai-context { display:grid; grid-template-columns:1fr 1fr; gap:14px; }
+        .ai-context-card { background:var(--card); border:1px solid var(--line); border-radius:14px; padding:14px; max-height:260px; overflow-y:auto; }
         .ai-context-card h4 { margin:0 0 10px; font-size:14px; color:var(--accent); }
         .ai-news-mini { font-size:13px; margin-bottom:8px; padding-bottom:8px; border-bottom:1px solid #edf0e8; }
         .ai-news-mini:last-child { border-bottom:none; margin-bottom:0; padding-bottom:0; }
@@ -1918,37 +2039,85 @@
         .ai-news-mini .m { font-size:11px; color:var(--muted); margin-top:2px; }
         .ai-dt-mini { font-size:13px; margin-bottom:8px; }
         .ai-dt-mini .d { font-weight:600; color:var(--accent); }
-        .ai-result { background:#fff; border:1px solid var(--line); border-radius:14px; padding:18px; min-height:200px; white-space:pre-wrap; line-height:1.7; font-size:14px; }
-        .ai-result .thinking { color:var(--muted); font-style:italic; }
-        .ai-actions { display:flex; gap:10px; margin-bottom:14px; }
-        .ai-prompt-area { margin-bottom:14px; }
-        .ai-prompt-area textarea { width:100%; min-height:60px; border:1px solid var(--line); border-radius:12px; padding:10px; font-size:14px; font-family:inherit; resize:vertical; }
-        .ai-status { font-size:12px; color:var(--muted); margin-top:8px; }
-        @media (max-width:980px) { .ai-config { grid-template-columns:1fr; } .ai-context { grid-template-columns:1fr; } }
+        .ai-result-card { background:var(--card); border:1px solid var(--line); border-radius:16px; padding:16px; text-align:left; }
+        .ai-result-header { display:flex; justify-content:space-between; align-items:center; margin-bottom:12px; }
+        .ai-result-header h4 { margin:0; font-size:14px; color:var(--accent); }
+        .ai-result-tabs { display:flex; gap:4px; background:#f1f5f9; border-radius:10px; padding:3px; align-self:flex-start; }
+        .ai-result-tabs button { padding:6px 14px; font-size:12px; border-radius:8px; border:none; background:transparent; cursor:pointer; color:var(--muted); transition:all 0.2s; }
+        .ai-result-tabs button.active { background:#fff; color:var(--text); box-shadow:0 1px 3px rgba(0,0,0,0.1); }
+        .ai-result-content { min-height:200px; line-height:1.8; font-size:14px; text-align:left; }
+        .ai-result-content.rendered { white-space:normal; }
+        .ai-result-content.rendered h1,.ai-result-content.rendered h2,.ai-result-content.rendered h3 { margin:20px 0 10px; font-weight:700; color:var(--text); }
+        .ai-result-content.rendered h1 { font-size:20px; border-bottom:2px solid var(--line); padding-bottom:8px; }
+        .ai-result-content.rendered h2 { font-size:17px; }
+        .ai-result-content.rendered h3 { font-size:15px; }
+        .ai-result-content.rendered p { margin:10px 0; }
+        .ai-result-content.rendered ul,.ai-result-content.rendered ol { margin:10px 0; padding-left:24px; }
+        .ai-result-content.rendered li { margin:6px 0; }
+        .ai-result-content.rendered strong { font-weight:700; color:var(--accent); }
+        .ai-result-content.rendered em { font-style:italic; }
+        .ai-result-content.rendered code { background:#f1f5f9; padding:2px 6px; border-radius:4px; font-size:13px; font-family:monospace; }
+        .ai-result-content.rendered pre { background:#f8faf7; border:1px solid var(--line); border-radius:10px; padding:14px; overflow-x:auto; margin:12px 0; }
+        .ai-result-content.rendered pre code { background:none; padding:0; }
+        .ai-result-content.rendered blockquote { border-left:3px solid var(--accent); padding-left:14px; margin:10px 0; color:var(--muted); background:#f8faf7; padding:10px 14px; border-radius:0 8px 8px 0; }
+        .ai-result-content.rendered hr { border:none; border-top:1px solid var(--line); margin:16px 0; }
+        .ai-result-content.raw { white-space:pre-wrap; font-family:"SFM Mono",Monaco,Menlo,Consolas,monospace; font-size:13px; color:#334155; background:#f8faf7; padding:14px; border-radius:10px; }
+        .ai-loading { display:flex; flex-direction:column; align-items:center; justify-content:center; min-height:240px; gap:16px; }
+        .ai-loading-spinner { width:44px; height:44px; border:3px solid var(--line); border-top-color:var(--accent); border-radius:50%; animation:ai-spin 0.8s linear infinite; }
+        @keyframes ai-spin { to { transform:rotate(360deg); } }
+        .ai-loading-text { color:var(--muted); font-size:14px; animation:ai-pulse 1.5s ease-in-out infinite; }
+        @keyframes ai-pulse { 0%,100%{opacity:1} 50%{opacity:0.5} }
+        .ai-loading-hint { color:var(--muted); font-size:12px; }
+        .ai-thinking { display:flex; align-items:center; gap:8px; padding:20px; color:var(--muted); font-size:14px; }
+        .ai-thinking-dots { display:flex; gap:4px; }
+        .ai-thinking-dots span { width:6px; height:6px; background:var(--accent); border-radius:50%; animation:ai-bounce 1.4s ease-in-out infinite; }
+        .ai-thinking-dots span:nth-child(2) { animation-delay:0.2s; }
+        .ai-thinking-dots span:nth-child(3) { animation-delay:0.4s; }
+        @keyframes ai-bounce { 0%,80%,100%{transform:scale(0.6);opacity:0.4} 40%{transform:scale(1);opacity:1} }
+        .ai-btn-loading { position:relative; pointer-events:none; }
+        .ai-btn-loading::after { content:''; position:absolute; inset:0; background:rgba(255,255,255,0.3); border-radius:inherit; }
+        .ai-status { font-size:12px; color:var(--muted); margin-top:4px; }
+        @media (max-width:1100px) { .ai-layout { grid-template-columns:1fr; } .ai-left { position:static; } .ai-context { grid-template-columns:1fr; } }
       </style>`;
 
       root.innerHTML = styles + `
-        <h3 style="margin:0 0 16px;">🤖 AI 智能分析</h3>
-        <div class="ai-config" id="ai-config">
-          <div><label>API Base URL</label><input id="ai-baseurl" placeholder="https://api.openai.com/v1" value="${escapeHtml(savedBaseUrl)}"></div>
-          <div><label>API Key</label><input id="ai-key" type="password" placeholder="sk-..." value="${escapeHtml(savedKey)}"></div>
-          <div><label>模型名称</label><input id="ai-model" placeholder="gpt-4o-mini" value="${escapeHtml(savedModel)}"></div>
-          <div><button class="primary" id="ai-save-config" style="margin-top:18px;">💾 保存</button></div>
+        <h3 style="margin:0 0 16px;">AI 智能分析</h3>
+        <div class="ai-layout">
+          <div class="ai-left">
+            <div class="ai-card">
+              <h4>API 配置</h4>
+              <div class="ai-config-grid">
+                <div><label>Base URL</label><input id="ai-baseurl" placeholder="https://api.openai.com/v1" value="${escapeHtml(savedBaseUrl)}"></div>
+                <div><label>API Key</label><input id="ai-key" type="password" placeholder="sk-..." value="${escapeHtml(savedKey)}"></div>
+                <div><label>模型</label><input id="ai-model" placeholder="gpt-4o-mini" value="${escapeHtml(savedModel)}"></div>
+                <div><button class="primary" id="ai-save-config" style="width:100%;">保存配置</button></div>
+              </div>
+            </div>
+            <div class="ai-card">
+              <h4>选择股票</h4>
+              <select id="ai-stock-select" class="ai-stock-select">
+                <option value="">-- 请选择 --</option>
+                ${stockCodes.map(c => {
+                  const name = stockNames[c] || '';
+                  return `<option value="${escapeHtml(c)}">${escapeHtml(c)}${name ? ' - ' + escapeHtml(name) : ''}</option>`;
+                }).join('')}
+              </select>
+            </div>
+            <div class="ai-card ai-prompt-card">
+              <h4>分析提示词</h4>
+              <textarea id="ai-prompt" placeholder="可自定义分析提示词，留空使用默认提示词">请从资金面（龙虎榜数据）、消息面（近期新闻）两个维度，综合分析该股票的近期走势和市场关注度，给出简要的投资参考意见。</textarea>
+              <div class="ai-actions">
+                <button class="primary" id="ai-analyze-btn" style="flex:1;">开始分析</button>
+                <button id="ai-stop-btn" style="display:none;">停止</button>
+              </div>
+            </div>
+          </div>
+          <div class="ai-right">
+            <div id="ai-context-area"></div>
+            <div id="ai-result-area"></div>
+            <div id="ai-status" class="ai-status"></div>
+          </div>
         </div>
-        <div class="ai-stock-bar">
-          <select id="ai-stock-select">
-            <option value="">-- 选择股票 --</option>
-            ${stockCodes.map(c => `<option value="${escapeHtml(c)}">${escapeHtml(c)}</option>`).join('')}
-          </select>
-          <button class="primary" id="ai-analyze-btn">🔍 开始分析</button>
-          <button id="ai-stop-btn" style="display:none;">⏹ 停止</button>
-        </div>
-        <div class="ai-prompt-area">
-          <textarea id="ai-prompt" placeholder="可自定义分析提示词，留空使用默认提示词。例如：请从资金面、消息面、技术面三个维度分析该股票的短期走势。">请从资金面（龙虎榜数据）、消息面（近期新闻）两个维度，综合分析该股票的近期走势和市场关注度，给出简要的投资参考意见。</textarea>
-        </div>
-        <div id="ai-context-area"></div>
-        <div id="ai-result-area"></div>
-        <div id="ai-status" class="ai-status"></div>
       `;
 
       // 保存配置
@@ -1956,7 +2125,7 @@
         localStorage.setItem('ai_base_url', document.getElementById('ai-baseurl').value.trim());
         localStorage.setItem('ai_api_key', document.getElementById('ai-key').value.trim());
         localStorage.setItem('ai_model', document.getElementById('ai-model').value.trim());
-        document.getElementById('ai-status').textContent = '✅ 配置已保存到本地浏览器';
+        document.getElementById('ai-status').textContent = '配置已保存到本地浏览器';
         setTimeout(() => { document.getElementById('ai-status').textContent = ''; }, 2000);
       });
 
@@ -1976,8 +2145,7 @@
         const dt = ctx.dragon_tiger || [];
         let html = '<div class="ai-context">';
 
-        // 新闻卡片
-        html += '<div class="ai-context-card"><h4>📰 近期新闻 (' + news.length + '条)</h4>';
+        html += '<div class="ai-context-card"><h4>近期新闻 (' + news.length + '条)</h4>';
         if (news.length === 0) {
           html += '<div class="muted">暂无新闻数据</div>';
         } else {
@@ -1992,20 +2160,19 @@
         }
         html += '</div>';
 
-        // 龙虎榜卡片
-        html += '<div class="ai-context-card"><h4>📊 龙虎榜数据 (' + dt.length + '个交易日)</h4>';
+        html += '<div class="ai-context-card"><h4>龙虎榜 (' + dt.length + '个交易日)</h4>';
         if (dt.length === 0) {
           html += '<div class="muted">暂无龙虎榜数据</div>';
         } else {
           html += dt.slice(0, 5).map(d => {
             const ops = (d.operations || []).slice(0, 5);
-            return '<div class="ai-dt-mini"><div class="d">📅 ' + escapeHtml(d.date) + '</div>' +
+            return '<div class="ai-dt-mini"><div class="d">' + escapeHtml(d.date) + '</div>' +
               ops.map(op => {
                 const dir = op.direction === '买入' ? 'buy' : 'sell';
                 return '<div style="font-size:12px;margin-left:8px;">' +
                   '<span class="' + dir + '">' + escapeHtml(op.direction || '') + '</span> ' +
                   escapeHtml(op.seatName || op.seat_name || '') +
-                  (op.amount != null ? ' · ' + Number(op.amount).toFixed(0) + '万' : '') +
+                  (op.amount != null ? ' · ' + fmtAmount(op.amount) : '') +
                   '</div>';
               }).join('') +
               '</div>';
@@ -2015,9 +2182,63 @@
         area.innerHTML = html;
       }
 
+      // Markdown 渲染函数
+      function renderMarkdown(text) {
+        let html = escapeHtml(text);
+        html = html.replace(/^### (.+)$/gm, '<h3>$1</h3>');
+        html = html.replace(/^## (.+)$/gm, '<h2>$1</h2>');
+        html = html.replace(/^# (.+)$/gm, '<h1>$1</h1>');
+        html = html.replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>');
+        html = html.replace(/\*(.+?)\*/g, '<em>$1</em>');
+        html = html.replace(/`([^`]+)`/g, '<code>$1</code>');
+        html = html.replace(/```[\s\S]*?```/g, function(match) {
+          const code = match.slice(3, -3).replace(/^[a-z]*\n/, '');
+          return '<pre><code>' + code + '</code></pre>';
+        });
+        html = html.replace(/^&gt; (.+)$/gm, '<blockquote>$1</blockquote>');
+        html = html.replace(/^- (.+)$/gm, '<li>$1</li>');
+        html = html.replace(/^\* (.+)$/gm, '<li>$1</li>');
+        html = html.replace(/(<li>.*<\/li>\n?)+/g, '<ul>$&</ul>');
+        html = html.replace(/^\d+\. (.+)$/gm, '<li>$1</li>');
+        html = html.replace(/^---$/gm, '<hr>');
+        html = html.replace(/\n\n/g, '</p><p>');
+        html = '<p>' + html + '</p>';
+        html = html.replace(/<p><\/p>/g, '');
+        html = html.replace(/<p>(<h[1-3]>)/g, '$1');
+        html = html.replace(/(<\/h[1-3]>)<\/p>/g, '$1');
+        html = html.replace(/<p>(<ul>)/g, '$1');
+        html = html.replace(/(<\/ul>)<\/p>/g, '$1');
+        html = html.replace(/<p>(<blockquote>)/g, '$1');
+        html = html.replace(/(<\/blockquote>)<\/p>/g, '$1');
+        html = html.replace(/<p>(<hr>)/g, '$1');
+        html = html.replace(/<p>(<pre>)/g, '$1');
+        html = html.replace(/(<\/pre>)<\/p>/g, '$1');
+        return html;
+      }
+
       // 分析按钮
       let abortController = null;
-      document.getElementById('ai-analyze-btn').addEventListener('click', async () => {
+      let currentRawText = '';
+      const analyzeBtn = document.getElementById('ai-analyze-btn');
+      const stopBtn = document.getElementById('ai-stop-btn');
+
+      function setAnalyzingState(isAnalyzing) {
+        if (isAnalyzing) {
+          analyzeBtn.disabled = true;
+          analyzeBtn.classList.add('ai-btn-loading');
+          analyzeBtn.textContent = '分析中...';
+          stopBtn.style.display = 'inline-block';
+          stockSelect.disabled = true;
+        } else {
+          analyzeBtn.disabled = false;
+          analyzeBtn.classList.remove('ai-btn-loading');
+          analyzeBtn.textContent = '开始分析';
+          stopBtn.style.display = 'none';
+          stockSelect.disabled = false;
+        }
+      }
+
+      analyzeBtn.addEventListener('click', async () => {
         const code = stockSelect.value;
         if (!code) { alert('请先选择一只股票'); return; }
 
@@ -2030,12 +2251,12 @@
           return;
         }
 
+        const stockName = stockNames[code] || '';
         const ctx = stockContexts[code] || {};
         const userPrompt = document.getElementById('ai-prompt').value.trim() ||
           '请从资金面（龙虎榜数据）、消息面（近期新闻）两个维度，综合分析该股票的近期走势和市场关注度，给出简要的投资参考意见。';
 
-        // 构建上下文文本
-        let contextText = '## 股票代码: ' + code + '\n\n';
+        let contextText = '## 股票: ' + code + (stockName ? ' - ' + stockName : '') + '\n\n';
         const news = ctx.news || [];
         if (news.length > 0) {
           contextText += '### 近期新闻\n';
@@ -2053,31 +2274,38 @@
             contextText += '日期: ' + d.date + '\n';
             (d.operations || []).forEach(op => {
               contextText += '  ' + (op.direction || '') + ' ' + (op.seatName || op.seat_name || '') +
-                (op.amount != null ? ' 金额:' + op.amount + '万' : '') + '\n';
+                (op.amount != null ? ' 金额:' + fmtAmount(op.amount) : '') + '\n';
             });
           });
         }
 
         const resultArea = document.getElementById('ai-result-area');
         const statusEl = document.getElementById('ai-status');
-        const analyzeBtn = document.getElementById('ai-analyze-btn');
-        const stopBtn = document.getElementById('ai-stop-btn');
 
-        resultArea.innerHTML = '<div class="ai-result" id="ai-stream"></div>';
-        const streamEl = document.getElementById('ai-stream');
-        streamEl.textContent = '⏳ 正在请求 AI 分析...';
+        // 显示 thinking 状态
+        resultArea.innerHTML = `
+          <div class="ai-result-card">
+            <div class="ai-result-header">
+              <h4>分析结果</h4>
+            </div>
+            <div class="ai-thinking">
+              <div class="ai-thinking-dots"><span></span><span></span><span></span></div>
+              <span>AI 正在思考中...</span>
+            </div>
+          </div>`;
         statusEl.textContent = '';
-        analyzeBtn.disabled = true;
-        stopBtn.style.display = 'inline-block';
+        setAnalyzingState(true);
+        currentRawText = '';
 
         abortController = new AbortController();
+        let firstTokenReceived = false;
 
         try {
           const apiUrl = baseUrl + '/chat/completions';
           const body = {
             model: model,
             messages: [
-              { role: 'system', content: '你是一位专业的 A 股市场分析师。请基于提供的股票数据和新闻信息，给出专业、客观的分析。回答使用中文。' },
+              { role: 'system', content: '你是一位专业的 A 股市场分析师。请基于提供的股票数据和新闻信息，给出专业、客观的分析。回答使用中文，使用 Markdown 格式输出。' },
               { role: 'user', content: contextText + '\n---\n' + userPrompt }
             ],
             stream: true,
@@ -2100,11 +2328,40 @@
             throw new Error('API 请求失败 (' + resp.status + '): ' + errText.substring(0, 300));
           }
 
-          streamEl.textContent = '';
+          let streamEl = null;
+
+          function initResultArea() {
+            resultArea.innerHTML = `
+              <div class="ai-result-card">
+                <div class="ai-result-header">
+                  <h4>分析结果</h4>
+                  <div class="ai-result-tabs">
+                    <button class="active" data-mode="rendered">渲染</button>
+                    <button data-mode="raw">原文</button>
+                  </div>
+                </div>
+                <div class="ai-result-content rendered" id="ai-stream"></div>
+              </div>`;
+            streamEl = document.getElementById('ai-stream');
+
+            resultArea.querySelectorAll('.ai-result-tabs button').forEach(btn => {
+              btn.addEventListener('click', () => {
+                resultArea.querySelectorAll('.ai-result-tabs button').forEach(b => b.classList.remove('active'));
+                btn.classList.add('active');
+                const mode = btn.dataset.mode;
+                streamEl.className = 'ai-result-content ' + mode;
+                if (mode === 'rendered') {
+                  streamEl.innerHTML = renderMarkdown(currentRawText);
+                } else {
+                  streamEl.textContent = currentRawText;
+                }
+              });
+            });
+          }
+
           const reader = resp.body.getReader();
           const decoder = new TextDecoder();
           let buffer = '';
-          let fullText = '';
           let tokenCount = 0;
 
           while (true) {
@@ -2122,33 +2379,54 @@
                 const json = JSON.parse(data);
                 const delta = json.choices && json.choices[0] && json.choices[0].delta;
                 if (delta && delta.content) {
-                  fullText += delta.content;
+                  // 收到第一个 token 时，初始化结果区域
+                  if (!firstTokenReceived) {
+                    firstTokenReceived = true;
+                    initResultArea();
+                  }
+                  currentRawText += delta.content;
                   tokenCount++;
-                  streamEl.textContent = fullText;
+                  const activeMode = resultArea.querySelector('.ai-result-tabs button.active')?.dataset.mode || 'rendered';
+                  if (activeMode === 'rendered') {
+                    streamEl.innerHTML = renderMarkdown(currentRawText);
+                  } else {
+                    streamEl.textContent = currentRawText;
+                  }
                   streamEl.scrollTop = streamEl.scrollHeight;
                 }
               } catch (e) { /* skip malformed chunks */ }
             }
           }
 
-          statusEl.textContent = '✅ 分析完成，共 ' + tokenCount + ' 个 token 片段';
+          statusEl.textContent = '分析完成，共 ' + tokenCount + ' 个 token 片段';
         } catch (err) {
           if (err.name === 'AbortError') {
-            streamEl.textContent += '\n\n⏹ 已停止生成';
+            // 如果还没有收到第一个 token，初始化结果区域
+            if (!firstTokenReceived) {
+              initResultArea();
+            }
+            currentRawText += '\n\n已停止生成';
+            if (streamEl) {
+              const activeMode = resultArea.querySelector('.ai-result-tabs button.active')?.dataset.mode || 'rendered';
+              if (activeMode === 'rendered') {
+                streamEl.innerHTML = renderMarkdown(currentRawText);
+              } else {
+                streamEl.textContent = currentRawText;
+              }
+            }
             statusEl.textContent = '已手动停止';
           } else {
-            streamEl.textContent = '❌ 错误: ' + escapeHtml(err.message);
+            resultArea.innerHTML = '<div class="ai-result-card"><div class="ai-result-content" style="color:var(--danger);">错误: ' + escapeHtml(err.message) + '</div></div>';
             statusEl.textContent = '请求失败';
           }
         } finally {
-          analyzeBtn.disabled = false;
-          stopBtn.style.display = 'none';
+          setAnalyzingState(false);
           abortController = null;
         }
       });
 
       // 停止按钮
-      document.getElementById('ai-stop-btn').addEventListener('click', () => {
+      stopBtn.addEventListener('click', () => {
         if (abortController) abortController.abort();
       });
     }

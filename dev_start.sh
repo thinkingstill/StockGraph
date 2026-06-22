@@ -67,6 +67,5 @@ echo "[stockgraph] building unified app"
 echo "[stockgraph] building dev index"
 "$PYTHON_BIN" scripts/build_dev_index.py
 
-echo "[stockgraph] serving outputs at http://$HOST:$PORT/app/index.html"
-cd "$ROOT_DIR/outputs"
-exec "$PYTHON_BIN" -m http.server "$PORT" --bind "$HOST"
+echo "[stockgraph] starting API server at http://$HOST:$PORT/app/index.html"
+exec "$PYTHON_BIN" scripts/api_server.py --host "$HOST" --port "$PORT"
