@@ -261,7 +261,7 @@
   </div>
 
   <script>
-    const state = { manifest: null, loaded: {} };
+    const state = { manifest: null, loaded: {}, stockNames: {} };
 
     function fmtAmount(v) {
       const n = Number(v || 0);
@@ -283,6 +283,11 @@
     }
     function escapeHtml(text) {
       return String(text ?? '').replace(/[&<>"']/g, s => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[s]));
+    }
+    function getStockDisplayName(code) {
+      if (!code) return '';
+      const name = state.stockNames[code];
+      return name ? `${code} ${name}` : code;
     }
     async function fetchJson(path) {
       const res = await fetch(path, { cache: 'no-store' });
@@ -338,6 +343,7 @@
     async function loadManifest() {
       try {
         state.manifest = await fetchJson('./data/app_manifest.json');
+        state.stockNames = state.manifest.stock_names || {};
         const ok = Object.entries(state.manifest.sections || {}).filter(([,v]) => v.available).length;
         document.getElementById('manifestStatus').textContent = `已加载数据清单，可用模块 ${ok}/${Object.keys(state.manifest.sections || {}).length}，生成时间 ${state.manifest.generated_at || '-'}`;
       } catch (e) {
@@ -1706,19 +1712,24 @@
       const totalArticles = payload.total_articles || 0;
       const stockCodes = payload.stock_codes || [];
 
-      // 获取股票名称映射（从 AI 分析数据或其他来源）
-      const stockNameMap = {};
-      // 尝试从 summaries 中获取名称
+      // 使用全局股票名称映射
+      const stockNameMap = state.stockNames || {};
+      // 从 summaries 中补充
       summaries.forEach(s => {
         if (s.stock_name) stockNameMap[s.stock_code] = s.stock_name;
       });
+
+      // 从 localStorage 读取 LLM 配置
+      const savedLlmBaseUrl = localStorage.getItem('sn_llm_base_url') || '';
+      const savedLlmKey = localStorage.getItem('sn_llm_key') || '';
+      const savedLlmModel = localStorage.getItem('sn_llm_model') || '';
 
       const styles = `
         <style>
           .sn-layout{display:grid;grid-template-columns:320px 1fr;gap:20px;align-items:start;}
           .sn-left{display:flex;flex-direction:column;gap:14px;position:sticky;top:20px;}
           .sn-right{display:flex;flex-direction:column;gap:14px;}
-          .sn-card{background:var(--card);border:1px solid var(--line);border-radius:16px;padding:16px;}
+          .sn-card{background:var(--card);border:1px solid var(--line);border-radius:16px;padding:16px;text-align:left;}
           .sn-card h4{margin:0 0 12px;font-size:14px;color:var(--accent);}
           .sn-stock-input{width:100%;padding:10px 12px;font-size:14px;border:1px solid var(--line);border-radius:12px;}
           .sn-date-row{display:flex;gap:10px;margin-top:10px;}
@@ -1732,8 +1743,8 @@
           .sn-stat .v{font-size:20px;font-weight:700;}
           .sn-toolbar{display:flex;gap:10px;flex-wrap:wrap;margin-bottom:14px;align-items:center;}
           .sn-toolbar select,.sn-toolbar input{min-width:140px;}
-          .sn-news-list{max-height:70vh;overflow-y:auto;}
-          .sn-news-item{padding:14px;border-bottom:1px solid #edf0e8;transition:background 0.2s;}
+          .sn-news-list{max-height:70vh;overflow-y:auto;text-align:left;}
+          .sn-news-item{padding:14px;border-bottom:1px solid #edf0e8;transition:background 0.2s;text-align:left;}
           .sn-news-item:hover{background:#f8faf7;}
           .sn-news-item:last-child{border-bottom:none;}
           .sn-news-title{font-weight:600;font-size:14px;margin-bottom:6px;line-height:1.4;}
@@ -1753,11 +1764,18 @@
           .sn-loading-dot:nth-child(3){animation-delay:0.4s;}
           @keyframes sn-bounce{0%,80%,100%{transform:scale(0.6);opacity:0.4}40%{transform:scale(1);opacity:1}}
           .sn-empty{padding:40px;text-align:center;color:var(--muted);border:1px dashed var(--line);border-radius:16px;background:#fafbf8;}
+          .sn-llm-config{margin-top:10px;}
+          .sn-llm-config label{display:block;font-size:11px;color:var(--muted);margin-bottom:2px;margin-top:8px;}
+          .sn-llm-config input{width:100%;padding:8px 10px;font-size:12px;border:1px solid var(--line);border-radius:10px;}
+          .sn-analyze-btn{width:100%;margin-top:10px;padding:10px;font-size:14px;background:linear-gradient(135deg,var(--accent),var(--accent-2));color:#fff;border:none;border-radius:12px;cursor:pointer;}
+          .sn-analyze-btn:disabled{opacity:0.6;cursor:not-allowed;}
+          .sn-analysis-result{background:#f8faf7;border:1px solid var(--line);border-radius:14px;padding:16px;margin-top:14px;text-align:left;line-height:1.8;font-size:14px;white-space:normal;}
+          .sn-analysis-result h1,.sn-analysis-result h2,.sn-analysis-result h3{margin:16px 0 8px;font-weight:700;}
+          .sn-analysis-result p{margin:8px 0;}
+          .sn-analysis-result ul,.sn-analysis-result ol{margin:8px 0;padding-left:24px;}
+          .sn-analysis-result strong{color:var(--accent);}
           @media(max-width:1100px){.sn-layout{grid-template-columns:1fr;}.sn-left{position:static;}}
         </style>`;
-
-      // 从 URL 获取 API 基础地址
-      const apiBase = window.location.origin;
 
       // 检测是否为 GitHub Pages 环境
       const isGitHubPages = window.location.hostname.endsWith('.github.io');
@@ -1766,6 +1784,7 @@
       let currentStockCode = '';
       let currentNews = [];
       let isCrawling = false;
+      let isAnalyzing = false;
 
       function renderPage() {
         const crawlBtnDisabled = isGitHubPages ? 'disabled' : '';
@@ -1782,7 +1801,10 @@
                 <h4>新闻采集</h4>
                 <div>
                   <label style="font-size:12px;color:var(--muted);display:block;margin-bottom:4px;">股票代码</label>
-                  <input id="sn-stock-input" class="sn-stock-input" placeholder="输入股票代码，如 000001" value="${escapeHtml(currentStockCode)}">
+                  <input id="sn-stock-input" class="sn-stock-input" list="sn-stock-list" placeholder="输入或选择股票代码" value="${escapeHtml(currentStockCode)}">
+                  <datalist id="sn-stock-list">
+                    ${Object.entries(stockNameMap).slice(0, 500).map(([code, name]) => `<option value="${escapeHtml(code)}">${escapeHtml(code)} ${escapeHtml(name)}</option>`).join('')}
+                  </datalist>
                 </div>
                 <div class="sn-date-row">
                   <div>
@@ -1798,6 +1820,21 @@
                 ${crawlHint}
               </div>
               <div class="sn-card">
+                <h4>大模型配置</h4>
+                <div class="sn-llm-config">
+                  <label>Base URL</label>
+                  <input id="sn-llm-baseurl" placeholder="https://api.openai.com/v1" value="${escapeHtml(savedLlmBaseUrl)}">
+                  <label>API Key</label>
+                  <input id="sn-llm-key" type="password" placeholder="sk-..." value="${escapeHtml(savedLlmKey)}">
+                  <label>模型</label>
+                  <input id="sn-llm-model" placeholder="gpt-4o-mini" value="${escapeHtml(savedLlmModel)}">
+                  <div style="display:flex;gap:8px;margin-top:10px;">
+                    <button id="sn-save-llm" style="flex:1;padding:8px;font-size:12px;">保存配置</button>
+                    <button id="sn-analyze-btn" class="sn-analyze-btn" style="flex:1;">AI 搜索</button>
+                  </div>
+                </div>
+              </div>
+              <div class="sn-card">
                 <h4>已有数据</h4>
                 <div class="sn-stats">
                   <div class="sn-stat"><div class="k">股票数</div><div class="v">${stockCodes.length}</div></div>
@@ -1806,7 +1843,7 @@
                 <div style="max-height:300px;overflow-y:auto;">
                   ${stockCodes.map(code => `
                     <div class="sn-stock-item" data-code="${escapeHtml(code)}" style="padding:8px 10px;cursor:pointer;border-radius:8px;font-size:13px;${code === currentStockCode ? 'background:#f0f7f4;font-weight:600;' : ''}">
-                      ${escapeHtml(code)}${stockNameMap[code] ? ' - ' + escapeHtml(stockNameMap[code]) : ''}
+                      ${escapeHtml(code)}${stockNameMap[code] ? ' ' + escapeHtml(stockNameMap[code]) : ''}
                       <span style="float:right;color:var(--muted);">${(stockNews[code] || []).length}条</span>
                     </div>
                   `).join('')}
@@ -1814,6 +1851,7 @@
               </div>
             </div>
             <div class="sn-right">
+              <div id="sn-analysis-area"></div>
               <div id="sn-content-area"></div>
             </div>
           </div>`;
@@ -1827,6 +1865,23 @@
             const code = e.target.value.trim();
             if (code) loadStockNews(code);
           }
+        });
+
+        // 保存 LLM 配置
+        document.getElementById('sn-save-llm').addEventListener('click', () => {
+          localStorage.setItem('sn_llm_base_url', document.getElementById('sn-llm-baseurl').value.trim());
+          localStorage.setItem('sn_llm_key', document.getElementById('sn-llm-key').value.trim());
+          localStorage.setItem('sn_llm_model', document.getElementById('sn-llm-model').value.trim());
+          alert('配置已保存');
+        });
+
+        // AI 分析按钮
+        document.getElementById('sn-analyze-btn').addEventListener('click', () => {
+          if (!currentStockCode) {
+            alert('请先选择一只股票');
+            return;
+          }
+          handleAnalyze(currentStockCode, currentNews);
         });
 
         // 绑定股票列表点击
@@ -1871,17 +1926,18 @@
         } else {
           document.getElementById('sn-content-area').innerHTML = `
             <div class="sn-card">
-              <h4>${escapeHtml(code)} 新闻</h4>
+              <h4>${escapeHtml(code)} ${stockNameMap[code] ? escapeHtml(stockNameMap[code]) : ''} 新闻</h4>
               <div class="sn-empty">暂无该股票的新闻数据，点击左侧"采集新闻"按钮获取</div>
             </div>`;
         }
       }
 
       function renderNewsList(code, news) {
+        const displayName = stockNameMap[code] ? `${code} ${stockNameMap[code]}` : code;
         const area = document.getElementById('sn-content-area');
         area.innerHTML = `
           <div class="sn-card">
-            <h4>${escapeHtml(code)} 新闻 <span style="font-size:12px;color:var(--muted);">(${news.length}条)</span></h4>
+            <h4>${escapeHtml(displayName)} 新闻 <span style="font-size:12px;color:var(--muted);">(${news.length}条)</span></h4>
             <div class="sn-toolbar">
               <select id="sn-filter-sentiment">
                 <option value="">全部情绪</option>
@@ -1921,6 +1977,130 @@
         document.getElementById('sn-filter-btn').addEventListener('click', drawNewsList);
         document.getElementById('sn-filter-sentiment').addEventListener('change', drawNewsList);
         drawNewsList();
+      }
+
+      async function handleAnalyze(code, news) {
+        const baseUrl = (document.getElementById('sn-llm-baseurl')?.value || localStorage.getItem('sn_llm_base_url') || '').replace(/\/+$/, '');
+        const apiKey = document.getElementById('sn-llm-key')?.value || localStorage.getItem('sn_llm_key') || '';
+        const model = document.getElementById('sn-llm-model')?.value || localStorage.getItem('sn_llm_model') || '';
+
+        if (!baseUrl || !apiKey || !model) {
+          alert('请先配置大模型的 Base URL、API Key 和模型名称');
+          return;
+        }
+
+        const analyzeBtn = document.getElementById('sn-analyze-btn');
+        const analysisArea = document.getElementById('sn-analysis-area');
+
+        isAnalyzing = true;
+        analyzeBtn.disabled = true;
+        analyzeBtn.textContent = '搜索中...';
+        analysisArea.innerHTML = `
+          <div class="sn-analysis-result">
+            <div class="sn-loading">
+              <div class="sn-loading-dot"></div>
+              <div class="sn-loading-dot"></div>
+              <div class="sn-loading-dot"></div>
+              <span>AI 正在搜索分析新闻...</span>
+            </div>
+          </div>`;
+
+        // 构建新闻摘要
+        const displayName = stockNameMap[code] ? `${code} ${stockNameMap[code]}` : code;
+        const newsSummary = news.slice(0, 20).map((n, i) => 
+          `${i+1}. [${n.sentiment || '中性'}] ${n.title} (${n.published_at || ''})`
+        ).join('\n');
+
+        const prompt = `请分析以下 ${displayName} 的近期新闻，给出：\n1. 整体情绪倾向（利好/利空/中性）\n2. 关键事件摘要\n3. 短期走势展望\n4. 风险提示\n\n新闻列表：\n${newsSummary}`;
+
+        try {
+            const apiUrl = baseUrl + '/chat/completions';
+            const body = {
+              model: model,
+              messages: [
+                { role: 'system', content: '你是一位专业的 A 股市场分析师。请基于提供的新闻信息，给出专业、客观的分析。回答使用中文，使用 Markdown 格式输出。' },
+                { role: 'user', content: prompt }
+              ],
+              stream: true,
+              temperature: 0.7,
+              max_tokens: 1500,
+            };
+
+            const resp = await fetch(apiUrl, {
+              method: 'POST',
+              headers: {
+                'Content-Type': 'application/json',
+                'Authorization': 'Bearer ' + apiKey,
+              },
+              body: JSON.stringify(body),
+            });
+
+            if (!resp.ok) {
+              const errText = await resp.text();
+              throw new Error('API 请求失败 (' + resp.status + '): ' + errText.substring(0, 200));
+            }
+
+            analysisArea.innerHTML = '<div class="sn-analysis-result" id="sn-analysis-stream"></div>';
+            const streamEl = document.getElementById('sn-analysis-stream');
+
+            const reader = resp.body.getReader();
+            const decoder = new TextDecoder();
+            let buffer = '';
+            let fullText = '';
+
+            while (true) {
+              const { done, value } = await reader.read();
+              if (done) break;
+              buffer += decoder.decode(value, { stream: true });
+              const lines = buffer.split('\n');
+              buffer = lines.pop() || '';
+              for (const line of lines) {
+                const trimmed = line.trim();
+                if (!trimmed || !trimmed.startsWith('data:')) continue;
+                const data = trimmed.slice(5).trim();
+                if (data === '[DONE]') continue;
+                try {
+                  const json = JSON.parse(data);
+                  const delta = json.choices && json.choices[0] && json.choices[0].delta;
+                  if (delta && delta.content) {
+                    fullText += delta.content;
+                    // 简单的 markdown 渲染
+                    let html = escapeHtml(fullText);
+                    html = html.replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>');
+                    html = html.replace(/\*(.+?)\*/g, '<em>$1</em>');
+                    html = html.replace(/\n/g, '<br>');
+                    streamEl.innerHTML = html;
+                    streamEl.scrollTop = streamEl.scrollHeight;
+                  }
+                } catch (e) { /* skip malformed chunks */ }
+              }
+            }
+
+            // 保存分析结果到 localStorage
+            try {
+              const savedAnalyses = JSON.parse(localStorage.getItem('sn_analyses') || '{}');
+              savedAnalyses[code] = {
+                analysis: fullText,
+                newsCount: news.length,
+                newsSample: news.slice(0, 10).map(n => ({
+                  title: n.title,
+                  sentiment: n.sentiment,
+                  published_at: n.published_at,
+                })),
+                analyzedAt: new Date().toISOString(),
+                stockName: stockNameMap[code] || '',
+              };
+              localStorage.setItem('sn_analyses', JSON.stringify(savedAnalyses));
+            } catch (e) {
+              console.error('保存分析结果失败:', e);
+            }
+        } catch (err) {
+          analysisArea.innerHTML = `<div class="sn-analysis-result" style="color:var(--danger);">分析失败: ${escapeHtml(err.message)}</div>`;
+        } finally {
+          isAnalyzing = false;
+          analyzeBtn.disabled = false;
+          analyzeBtn.textContent = 'AI 搜索';
+        }
       }
 
       function renderNewsItem(n) {
@@ -2267,6 +2447,19 @@
           });
           contextText += '\n';
         }
+
+        // 从 localStorage 读取之前保存的新闻分析
+        try {
+          const savedAnalyses = JSON.parse(localStorage.getItem('sn_analyses') || '{}');
+          if (savedAnalyses[code]) {
+            const saved = savedAnalyses[code];
+            contextText += '### 之前保存的新闻分析 (' + saved.analyzedAt + ')\n';
+            contextText += saved.analysis + '\n\n';
+          }
+        } catch (e) {
+          console.error('读取保存的分析失败:', e);
+        }
+
         const dt = ctx.dragon_tiger || [];
         if (dt.length > 0) {
           contextText += '### 龙虎榜数据\n';

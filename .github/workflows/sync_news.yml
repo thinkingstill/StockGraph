@@ -57,6 +57,12 @@ jobs:
         run: |
           set -euo pipefail
           
+          # 同步所有股票代码列表
+          echo "Syncing all stock codes..."
+          python scripts/sync_stock_codes.py || {
+            echo "Stock codes sync failed, but continuing..."
+          }
+          
           # 默认热门股票列表（可根据需要调整）
           DEFAULT_CODES="000001,000858,600519,000333,002475,300750,601318,600036,000651,002594,300059,601899,600900,000725,002415,300274,300308,002371,603259,002714"
           
@@ -81,7 +87,7 @@ jobs:
           }
           
           # 检查是否有变更
-          if git diff --quiet outputs/app/data/ai_analysis.json outputs/app/data/stock_news.json 2>/dev/null; then
+          if git diff --quiet outputs/app/data/ai_analysis.json outputs/app/data/stock_news.json data/reference/all_stock_codes.json 2>/dev/null; then
             echo "has_changes=false" >> "$GITHUB_OUTPUT"
           else
             echo "has_changes=true" >> "$GITHUB_OUTPUT"
@@ -98,6 +104,7 @@ jobs:
           # 添加更新的数据文件
           git add -f outputs/app/data/ || true
           git add -f data/shared_state/news.db || true
+          git add -f data/reference/all_stock_codes.json || true
           
           if git diff --cached --quiet; then
             echo "No changes to commit"

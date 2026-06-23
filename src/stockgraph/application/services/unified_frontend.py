@@ -35,6 +35,8 @@ class UnifiedFrontendService:
         ensure_runtime_dirs()
         self.dragon_tiger_repository.initialize_database()
         self.news_repository.initialize_database()
+        # 构建全局股票名称映射
+        stock_names = self._build_stock_names()
         section_meta = {
             "dragon_query": self._build_dragon_query_data(),
             "dragon_graph": self._build_dragon_graph_data(),
@@ -48,6 +50,7 @@ class UnifiedFrontendService:
         }
         manifest = {
             "generated_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+            "stock_names": stock_names,
             "sections": section_meta,
         }
         manifest_path = APP_DATA_DIR / "app_manifest.json"
@@ -56,6 +59,34 @@ class UnifiedFrontendService:
         app_path = APP_OUTPUT_DIR / "index.html"
         app_path.write_text(render_unified_app(), encoding="utf-8")
         return [app_path, manifest_path]
+
+    def _build_stock_names(self) -> dict[str, str]:
+        """构建全局股票代码->名称映射。"""
+        stock_names: dict[str, str] = {}
+        # 从 all_stock_codes.json 获取（akshare 同步）
+        all_codes_path = REFERENCE_DATA_DIR / "all_stock_codes.json"
+        if all_codes_path.exists():
+            try:
+                all_codes = json.loads(all_codes_path.read_text(encoding="utf-8"))
+                stock_names.update(all_codes)
+            except Exception:
+                pass
+        # 从 stock_basic_info 获取补充
+        basic_info = self._load_stock_basic_info()
+        for code, info in basic_info.items():
+            if info.get("stock_name") and code not in stock_names:
+                stock_names[code] = info["stock_name"]
+        # 从龙虎榜数据补充
+        try:
+            operations = self._load_dragon_tiger_operations()
+            for row in operations:
+                code = row.get("stock_code", "")
+                name = row.get("stock_name", "")
+                if code and name and code not in stock_names:
+                    stock_names[code] = name
+        except Exception:
+            pass
+        return stock_names
 
     def _build_dragon_query_data(self) -> dict:
         operations = self._load_dragon_tiger_operations()
