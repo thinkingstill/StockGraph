@@ -31,6 +31,9 @@ data/shared_state/*
 outputs/*.html
 outputs/html/*.html
 outputs/market/*.html
+outputs/dragon_tiger/*.json
+outputs/dragon_tiger/*.html
+outputs/dragon_tiger/*.md
 outputs/app/data/*.csv
 outputs/app/data/*.json
 outputs/app/data/*.js
@@ -40,3 +43,4 @@ outputs/app/*.html
 !outputs/app/data/.gitkeep
 !outputs/html/.gitkeep
 !outputs/market/.gitkeep
+!outputs/dragon_tiger/.gitkeep
