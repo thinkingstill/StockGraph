@@ -202,7 +202,7 @@
       <button class="workspace-btn active" data-workspace="dragon" data-default-tab="dragon_query">龙虎榜</button>
       <button class="workspace-btn" data-workspace="market" data-default-tab="market_hot">市场热度</button>
       <button class="workspace-btn" data-workspace="industry" data-default-tab="market_industry">行业观察</button>
-      <button class="workspace-btn" data-workspace="stock" data-default-tab="stock_news">个股研判</button>
+      <button class="workspace-btn" data-workspace="stock" data-default-tab="smart_analysis">个股研判</button>
     </div>
 
     <div class="tabs active" data-workspace="dragon">
@@ -219,8 +219,8 @@
       <button class="tab-btn" data-tab="market_calendar">行业日历</button>
     </div>
     <div class="tabs" data-workspace="stock">
-      <button class="tab-btn" data-tab="stock_news">个股新闻</button>
-      <button class="tab-btn" data-tab="ai_analysis">AI 分析</button>
+      <button class="tab-btn" data-tab="smart_analysis">智能分析</button>
+      <button class="tab-btn" data-tab="analysis_config">分析配置</button>
     </div>
 
     <section class="panel active" id="panel-dragon_query">
@@ -251,12 +251,12 @@
       <div id="marketIndustryRoot" class="empty">正在加载行业强弱数据...</div>
     </section>
 
-    <section class="panel" id="panel-stock_news">
-      <div id="stockNewsRoot" class="empty">正在加载个股新闻数据...</div>
+    <section class="panel" id="panel-smart_analysis">
+      <div id="smartAnalysisRoot" class="empty">正在加载智能分析...</div>
     </section>
 
-    <section class="panel" id="panel-ai_analysis">
-      <div id="aiAnalysisRoot" class="empty">正在加载 AI 分析数据...</div>
+    <section class="panel" id="panel-analysis_config">
+      <div id="analysisConfigRoot" class="empty">正在加载分析配置...</div>
     </section>
   </div>
 
@@ -361,10 +361,35 @@
         china_city_bubble: 'chinaCityBubbleRoot',
         market_calendar: 'marketCalendarRoot',
         market_industry: 'marketIndustryRoot',
-        stock_news: 'stockNewsRoot',
-        ai_analysis: 'aiAnalysisRoot',
+        smart_analysis: 'smartAnalysisRoot',
+        analysis_config: 'analysisConfigRoot',
       };
       const root = document.getElementById(rootMap[name]);
+      
+      // 分析配置页面不需要从后端获取数据
+      if (name === 'analysis_config') {
+        renderAnalysisConfig(root);
+        state.loaded[name] = true;
+        return;
+      }
+      
+      // 智能分析页面需要获取stock_news和ai_analysis两个数据源
+      if (name === 'smart_analysis') {
+        const newsSection = state.manifest.sections['stock_news'];
+        const aiSection = state.manifest.sections['ai_analysis'];
+        let newsPayload = { stock_codes: [], stock_summaries: [], stock_news: {}, total_articles: 0 };
+        let aiPayload = { stock_codes: [], stock_names: {}, stock_contexts: {} };
+        try {
+          if (newsSection && newsSection.available) newsPayload = await fetchJson(newsSection.path);
+        } catch (e) { /* ignore */ }
+        try {
+          if (aiSection && aiSection.available) aiPayload = await fetchJson(aiSection.path);
+        } catch (e) { /* ignore */ }
+        renderSmartAnalysis(root, { news: newsPayload, ai: aiPayload });
+        state.loaded[name] = true;
+        return;
+      }
+      
       if (!section || !section.available) {
         root.innerHTML = `<div class="empty">该页面当前无可用数据。<div style="margin-top:8px;">${escapeHtml(section?.message || '未生成对应数据文件')}</div></div>`;
         state.loaded[name] = true;
@@ -379,8 +404,6 @@
         if (name === 'china_city_bubble') renderChinaCityBubble(root, payload);
         if (name === 'market_calendar') renderMarketCalendar(root, payload);
         if (name === 'market_industry') renderMarketIndustry(root, payload);
-        if (name === 'stock_news') renderStockNews(root, payload);
-        if (name === 'ai_analysis') renderAIAnalysis(root, payload);
         state.loaded[name] = true;
       } catch (e) {
         root.innerHTML = `<div class="empty">数据加载失败<div style="margin-top:8px;">${escapeHtml(e.message)}</div></div>`;
@@ -675,6 +698,7 @@
       const defaultStart = payload.latest_date || dates[0];
       const defaultEnd = defaultStart;
       let currentFocus = null;
+      let selectedStockIds = [];
       const styles = `
         <style>
           .sg-layout{display:grid;grid-template-columns:minmax(0,1fr) 340px;gap:16px;}
@@ -690,6 +714,20 @@
           .sg-checks label{display:flex;align-items:center;gap:5px;background:#fff;border:1px solid var(--line);border-radius:999px;padding:7px 10px;font-size:12px;}
           .sg-checks input{padding:0;}
           .sg-toolbar-title{font-size:12px;color:var(--muted);margin:2px 0 8px;}
+          .sg-filters{display:flex;gap:8px;flex-wrap:wrap;margin-bottom:14px;align-items:center;}
+          .sg-filters input,.sg-filters select{flex:1;min-width:120px;}
+          .sg-filters button{flex-shrink:0;}
+          .sg-stock-selector{position:relative;}
+          .sg-stock-input{width:100%;padding:10px 12px;font-size:14px;border:1px solid var(--line);border-radius:12px;}
+          .sg-stock-dropdown{position:absolute;top:100%;left:0;right:0;background:#fff;border:1px solid var(--line);border-radius:12px;max-height:300px;overflow-y:auto;z-index:100;display:none;box-shadow:0 4px 12px rgba(0,0,0,0.1);}
+          .sg-stock-dropdown.show{display:block;}
+          .sg-stock-option{padding:8px 12px;cursor:pointer;font-size:13px;border-bottom:1px solid #f1f5f9;}
+          .sg-stock-option:hover{background:#f0f7f4;}
+          .sg-stock-option.selected{background:#dbeafe;color:#1e40af;}
+          .sg-stock-tags{display:flex;flex-wrap:wrap;gap:6px;margin-top:8px;}
+          .sg-stock-tag{display:inline-flex;align-items:center;gap:4px;background:#e0f2fe;color:#0369a1;padding:4px 8px;border-radius:6px;font-size:12px;}
+          .sg-stock-tag .remove{cursor:pointer;font-size:14px;line-height:1;}
+          .sg-stock-tag .remove:hover{color:#dc2626;}
           @media (max-width:1100px){.sg-layout{grid-template-columns:1fr;}.sg-side{max-height:none;}.sg-chart{height:620px;}}
         </style>`;
       root.innerHTML = styles + `
@@ -699,10 +737,9 @@
           <div class="stat"><div class="k">关系边</div><div class="v" id="sg-edge-v">0</div></div>
           <div class="stat"><div class="k">席位/新闻</div><div class="v" id="sg-alt-v">0</div></div>
         </div>
-        <div class="filters">
+        <div class="sg-filters">
           ${dateRangeControls('sg', dates, defaultStart, defaultEnd)}
           <input id="sg-keyword" placeholder="股票、行业、席位、新闻关键词">
-          <select id="sg-stock"><option value="">选择股票</option></select>
           <select id="sg-industry"><option value="">全部行业</option></select>
           <select id="sg-exchange"><option value="">全部交易所</option></select>
           <select id="sg-scale">
@@ -716,6 +753,12 @@
           <button class="primary" id="sg-run">刷新</button>
           <button id="sg-reset">重置</button>
         </div>
+        <div class="sg-toolbar-title">选择股票（支持搜索，可多选）</div>
+        <div class="sg-stock-selector">
+          <input id="sg-stock-search" class="sg-stock-input" placeholder="输入代码或名称搜索..." autocomplete="off">
+          <div id="sg-stock-dropdown" class="sg-stock-dropdown"></div>
+        </div>
+        <div class="sg-stock-tags" id="sg-stock-tags"></div>
         <div class="sg-toolbar-title">节点类型</div>
         <div class="sg-checks" id="sg-category-checks"></div>
         <div class="sg-toolbar-title">关系类型</div>
@@ -738,6 +781,78 @@
       `).join('');
 
       const chart = echarts.init(document.getElementById('sg-chart'));
+      
+      // 获取所有股票节点
+      function getAllStocks() {
+        const g = graph();
+        return (g.nodes || [])
+          .filter(n => n.category === 'stock')
+          .map(n => ({
+            id: n.id,
+            code: n.attributes?.code || '',
+            name: n.attributes?.stock_name || n.name,
+          }))
+          .sort((a, b) => (a.code || '').localeCompare(b.code || ''));
+      }
+
+      // 更新已选股票标签
+      function updateStockTags() {
+        const tagsEl = document.getElementById('sg-stock-tags');
+        const g = graph();
+        const nodeById = new Map((g.nodes || []).map(n => [n.id, n]));
+        
+        tagsEl.innerHTML = selectedStockIds.map(id => {
+          const node = nodeById.get(id);
+          const name = node?.attributes?.stock_name || node?.name || '';
+          const code = node?.attributes?.code || '';
+          const display = code && name ? `${code} ${name}` : (code || name || id);
+          return `<span class="sg-stock-tag">${escapeHtml(display)}<span class="remove" data-id="${escapeHtml(id)}">×</span></span>`;
+        }).join('');
+
+        tagsEl.querySelectorAll('.remove').forEach(btn => {
+          btn.addEventListener('click', () => {
+            selectedStockIds = selectedStockIds.filter(id => id !== btn.dataset.id);
+            updateStockTags();
+            draw();
+          });
+        });
+      }
+
+      // 搜索框和下拉逻辑
+      const searchInput = document.getElementById('sg-stock-search');
+      const dropdown = document.getElementById('sg-stock-dropdown');
+      
+      function showDropdown(filter = '') {
+        const stocks = getAllStocks();
+        const filtered = filter 
+          ? stocks.filter(s => s.code.includes(filter) || s.name.includes(filter))
+          : stocks;
+        
+        dropdown.innerHTML = filtered.slice(0, 100).map(s => 
+          `<div class="sg-stock-option ${selectedStockIds.includes(s.id) ? 'selected' : ''}" data-id="${escapeHtml(s.id)}">${escapeHtml(s.code)} ${escapeHtml(s.name)}</div>`
+        ).join('');
+        dropdown.classList.add('show');
+        
+        dropdown.querySelectorAll('.sg-stock-option').forEach(opt => {
+          opt.addEventListener('click', () => {
+            const id = opt.dataset.id;
+            if (selectedStockIds.includes(id)) {
+              selectedStockIds = selectedStockIds.filter(i => i !== id);
+            } else {
+              selectedStockIds.push(id);
+            }
+            updateStockTags();
+            showDropdown(searchInput.value.trim());
+            draw();
+          });
+        });
+      }
+
+      searchInput.addEventListener('focus', () => showDropdown());
+      searchInput.addEventListener('input', () => showDropdown(searchInput.value.trim()));
+      document.addEventListener('click', e => {
+        if (!e.target.closest('.sg-stock-selector')) dropdown.classList.remove('show');
+      });
 
       function aggregateGraphs(range) {
         if (range.length === 1) return graphs[range[0]] || { nodes: [], links: [], stats: {} };
@@ -788,24 +903,15 @@
       }
       function fillFilters() {
         const g = graph();
-        const currentStock = document.getElementById('sg-stock').value;
         const currentIndustry = document.getElementById('sg-industry').value;
         const currentExchange = document.getElementById('sg-exchange').value;
-        const stocks = (g.nodes || [])
-          .filter(n => n.category === 'stock')
-          .sort((a, b) => String(a.attributes?.code || a.name).localeCompare(String(b.attributes?.code || b.name)));
         const industries = Array.from(new Set((g.nodes || []).filter(n => n.category === 'industry').map(n => n.name))).sort();
         const exchanges = Array.from(new Set((g.nodes || []).filter(n => n.category === 'exchange').map(n => n.name))).sort();
-        document.getElementById('sg-stock').innerHTML = '<option value="">选择股票</option>' + stocks.map(n => {
-          const code = n.attributes?.code || '';
-          const name = n.attributes?.stock_name || n.name;
-          return `<option value="${escapeHtml(n.id)}">${escapeHtml(code ? code + ' ' + name : name)}</option>`;
-        }).join('');
         document.getElementById('sg-industry').innerHTML = '<option value="">全部行业</option>' + industries.map(x => `<option value="${escapeHtml(x)}">${escapeHtml(x)}</option>`).join('');
         document.getElementById('sg-exchange').innerHTML = '<option value="">全部交易所</option>' + exchanges.map(x => `<option value="${escapeHtml(x)}">${escapeHtml(x)}</option>`).join('');
-        if (stocks.some(n => n.id === currentStock)) document.getElementById('sg-stock').value = currentStock;
         if (industries.includes(currentIndustry)) document.getElementById('sg-industry').value = currentIndustry;
         if (exchanges.includes(currentExchange)) document.getElementById('sg-exchange').value = currentExchange;
+        updateStockTags();
       }
       function nodeMatchesFilters(node, keyword, industry, exchange, checked) {
         if (!checked.has(node.category)) return false;
@@ -822,7 +928,7 @@
         }
         return true;
       }
-      function selectCore(g, keyword, selectedStock, industry, exchange, checked, relChecked, scale) {
+      function selectCore(g, keyword, selectedStocks, industry, exchange, checked, relChecked, scale) {
         const allNodes = g.nodes || [];
         const nodeById = new Map(allNodes.map(n => [n.id, n]));
         const allLinks = (g.links || []).filter(l => relChecked.has(l.type));
@@ -832,14 +938,15 @@
           score.set(l.source, (score.get(l.source) || 0) + Number(l.value || 0) * 0.05);
           score.set(l.target, (score.get(l.target) || 0) + Number(l.value || 0) * 0.05);
         });
-        if (selectedStock) {
-          const selectedIds = new Set([selectedStock]);
+        
+        if (selectedStocks.length > 0) {
+          const selectedIds = new Set(selectedStocks);
           allLinks
-            .filter(l => l.source === selectedStock || l.target === selectedStock)
+            .filter(l => selectedStocks.includes(l.source) || selectedStocks.includes(l.target))
             .sort((a,b) => Number(b.value || 0) - Number(a.value || 0))
             .slice(0, limit)
             .forEach(l => {
-              const otherId = l.source === selectedStock ? l.target : l.source;
+              const otherId = selectedStocks.includes(l.source) ? l.target : l.source;
               const other = nodeById.get(otherId);
               if (other && checked.has(other.category)) selectedIds.add(otherId);
             });
@@ -847,6 +954,7 @@
           const links = allLinks.filter(l => selectedIds.has(l.source) && selectedIds.has(l.target));
           return { nodes, links };
         }
+        
         const base = allNodes.filter(n => nodeMatchesFilters(n, keyword, industry, exchange, checked));
         const selectedIds = new Set(base.sort((a,b) => (score.get(b.id) || 0) - (score.get(a.id) || 0)).slice(0, limit).map(n => n.id));
         if (keyword || industry || exchange) {
@@ -867,13 +975,12 @@
         const range = selectedDateRange('sg', dates);
         const g = graph();
         const keyword = document.getElementById('sg-keyword').value.trim().toLowerCase();
-        const selectedStock = document.getElementById('sg-stock').value;
         const industry = document.getElementById('sg-industry').value;
         const exchange = document.getElementById('sg-exchange').value;
         const checked = getCheckedCategories();
         const relChecked = getCheckedRelations();
         const scale = document.getElementById('sg-scale').value;
-        const view = selectCore(g, keyword, selectedStock, industry, exchange, checked, relChecked, scale);
+        const view = selectCore(g, keyword, selectedStockIds, industry, exchange, checked, relChecked, scale);
         const catIndex = key => categoryByKey.get(key)?.idx ?? 0;
         const lineColor = rel => {
           if (rel === 'seat_stock_trade') return '#dc2626';
@@ -912,9 +1019,10 @@
               position: 'right',
               formatter: p => {
                 const cat = categoryNames[p.data.category];
-                if (selectedStock && p.data.id === selectedStock) return (p.data.attributes?.stock_name || p.data.name).slice(0, 8);
+                const isCenter = selectedStockIds.includes(p.data.id);
+                if (isCenter) return (p.data.attributes?.stock_name || p.data.name).slice(0, 8);
                 if (['行业','交易所','涨跌状态','交易分层','游资别名'].includes(cat)) return p.data.name;
-                if (!selectedStock && cat === '股票' && Number(p.data.value || 0) > 24) return (p.data.attributes?.stock_name || p.data.name).slice(0, 6);
+                if (!selectedStockIds.length && cat === '股票' && Number(p.data.value || 0) > 24) return (p.data.attributes?.stock_name || p.data.name).slice(0, 6);
                 return '';
               },
               fontSize: 10
@@ -924,7 +1032,7 @@
             data: view.nodes.map(n => ({
               ...n,
               category: catIndex(n.category),
-              symbolSize: Math.max(6, Math.min(34, Math.sqrt(Number(n.value || 1)) * 3.2)),
+              symbolSize: selectedStockIds.includes(n.id) ? 28 : Math.max(6, Math.min(34, Math.sqrt(Number(n.value || 1)) * 3.2)),
               draggable: true
             })),
             links: view.links.map(l => ({
@@ -937,38 +1045,86 @@
       function renderNodeDetail(node) {
         const g = graph();
         const attrs = node.attributes || {};
+        const range = selectedDateRange('sg', dates);
         const related = (g.links || []).filter(l => l.source === node.id || l.target === node.id)
           .sort((a,b) => Number(b.value || 0) - Number(a.value || 0))
           .slice(0, 24);
         const nodeById = new Map((g.nodes || []).map(n => [n.id, n]));
+        
+        // 统计关联信息
+        const relatedStocks = related.filter(l => {
+          const otherId = l.source === node.id ? l.target : l.source;
+          const other = nodeById.get(otherId);
+          return other && other.category === 'stock';
+        });
+        
+        // 属性显示名称映射
+        const attrNames = {
+          code: '代码', stock_name: '名称', industry: '行业', exchange: '交易所',
+          latest_price: '最新价', change_pct: '涨跌幅', amount: '成交额', volume: '成交量',
+          follow: '关注', tweet: '讨论', deal: '交易', seat_type: '席位类型',
+          trader_alias: '游资别名', date: '日期', published_at: '发布时间', title: '标题',
+          sentiment: '情绪', event_type: '事件类型', stock_count: '股票数'
+        };
+        
+        // 格式化属性值
+        function formatAttr(key, val) {
+          if (key === 'change_pct') return Number(val).toFixed(2) + '%';
+          if (key === 'amount') return fmtYuanAmount(val);
+          if (key === 'latest_price') return Number(val).toFixed(2) + '元';
+          return val;
+        }
+        
+        // 构建属性列表
+        const attrHtml = Object.entries(attrs)
+          .filter(([k, v]) => v != null && v !== '')
+          .slice(0, 12)
+          .map(([k, v]) => `${escapeHtml(attrNames[k] || k)}: ${escapeHtml(formatAttr(k, v))}`)
+          .join('<br/>');
+        
+        // 涨跌状态节点显示额外统计
+        const isTradeState = node.category === 'trade_state';
+        const stateInfo = isTradeState ? `<div style="margin-top:6px;padding:8px;background:#f8faf7;border-radius:8px;font-size:12px;">
+          <div>关联股票: <strong>${relatedStocks.length}</strong> 只</div>
+          <div>统计日期: ${escapeHtml(range.length === 1 ? range[0] : range[0] + ' 至 ' + range[range.length-1])}</div>
+        </div>` : '';
+        
         document.getElementById('sg-detail').innerHTML = `
           <div class="sg-mini">
             <div class="name">${escapeHtml(node.name)}</div>
-            <div class="meta">${Object.entries(attrs).slice(0, 10).map(([k,v]) => `${escapeHtml(k)}: ${escapeHtml(v)}`).join('<br/>')}</div>
+            <div class="meta" style="margin-top:6px;">
+              <div style="font-size:11px;color:var(--muted);margin-bottom:4px;">数据区间: ${escapeHtml(dateRangeLabel(range))}</div>
+              ${attrHtml}
+            </div>
+            ${stateInfo}
           </div>
-          <div class="muted" style="margin:12px 0 4px;">强关联关系</div>
+          <div class="muted" style="margin:12px 0 4px;">强关联关系 (${related.length})</div>
           ${related.map(l => {
             const otherId = l.source === node.id ? l.target : l.source;
             const other = nodeById.get(otherId) || { name: otherId };
-            return `<div class="sg-mini"><div class="name">${escapeHtml(other.name)}</div><div class="meta">${escapeHtml(relationLabels[l.type] || l.type)} · 权重 ${Number(l.value || 0).toFixed(2)}</div></div>`;
+            const otherAttrs = other.attributes || {};
+            const metaParts = [escapeHtml(relationLabels[l.type] || l.type), `权重 ${Number(l.value || 0).toFixed(2)}`];
+            if (otherAttrs.change_pct != null) metaParts.push(`涨跌 ${Number(otherAttrs.change_pct).toFixed(2)}%`);
+            return `<div class="sg-mini"><div class="name">${escapeHtml(other.name)}</div><div class="meta">${metaParts.join(' · ')}</div></div>`;
           }).join('') || '<div class="muted">暂无关联边</div>'}`;
       }
       ['sg-start','sg-end'].forEach(id => document.getElementById(id).addEventListener('change', () => { fillFilters(); draw(); }));
       document.getElementById('sg-run').addEventListener('click', draw);
       document.getElementById('sg-reset').addEventListener('click', () => {
         document.getElementById('sg-keyword').value = '';
-        document.getElementById('sg-stock').value = '';
         document.getElementById('sg-industry').value = '';
         document.getElementById('sg-exchange').value = '';
         document.getElementById('sg-scale').value = '500';
         document.querySelectorAll('.sg-cat').forEach(x => { x.checked = defaultCategories.has(x.value); });
         document.querySelectorAll('.sg-rel').forEach(x => { x.checked = defaultRelations.has(x.value); });
         currentFocus = null;
+        selectedStockIds = [];
         document.getElementById('sg-detail').innerHTML = '点击图中的节点查看属性和强关联边。';
+        updateStockTags();
         draw();
       });
       document.getElementById('sg-keyword').addEventListener('keyup', e => { if (e.key === 'Enter') draw(); });
-      ['sg-stock','sg-industry','sg-exchange','sg-scale'].forEach(id => document.getElementById(id).addEventListener('change', draw));
+      ['sg-industry','sg-exchange','sg-scale'].forEach(id => document.getElementById(id).addEventListener('change', draw));
       document.querySelectorAll('.sg-cat').forEach(x => x.addEventListener('change', draw));
       document.querySelectorAll('.sg-rel').forEach(x => x.addEventListener('change', draw));
       chart.on('click', params => {
@@ -992,10 +1148,6 @@
       const defaultEnd = defaultStart;
       let chinaMapReady = false;
       let currentFiltered = [];
-      let abortController = null;
-      const savedBaseUrl = localStorage.getItem('ai_base_url') || '';
-      const savedKey = localStorage.getItem('ai_api_key') || '';
-      const savedModel = localStorage.getItem('ai_model') || '';
       const styles = `
         <style>
           .ccb-tools{display:flex;gap:10px;flex-wrap:wrap;margin-bottom:12px;align-items:center;}
@@ -1010,15 +1162,7 @@
           .ccb-city-row:hover{background:#f8faf7;}
           .ccb-detail{font-size:13px;line-height:1.6;margin-top:12px;border-top:1px solid #edf0e8;padding-top:12px;}
           .ccb-pill{display:inline-flex;align-items:center;gap:5px;border:1px solid var(--line);border-radius:999px;padding:4px 8px;margin:2px;font-size:12px;background:#fff;}
-          .ccb-ai{background:#fff;border:1px solid var(--line);border-radius:16px;padding:14px;margin-top:16px;}
-          .ccb-ai-grid{display:grid;grid-template-columns:1fr 1fr 1fr;gap:10px;margin-bottom:10px;}
-          .ccb-ai-grid label{display:block;font-size:12px;color:var(--muted);margin-bottom:4px;}
-          .ccb-ai-grid input{width:100%;}
-          .ccb-ai textarea{width:100%;min-height:78px;border:1px solid var(--line);border-radius:12px;padding:10px;font-family:inherit;resize:vertical;margin-bottom:10px;}
-          .ccb-ai-actions{display:flex;gap:10px;flex-wrap:wrap;align-items:center;margin-bottom:10px;}
-          .ccb-result{background:#f8faf7;border:1px solid var(--line);border-radius:14px;padding:14px;min-height:140px;white-space:pre-wrap;line-height:1.7;font-size:14px;}
-          .ccb-shot img{max-width:320px;border:1px solid var(--line);border-radius:12px;margin-top:8px;}
-          @media (max-width:1120px){.ccb-layout{grid-template-columns:1fr;}.ccb-side{max-height:none;}.ccb-chart{height:620px;}.ccb-ai-grid{grid-template-columns:1fr;}}
+          @media (max-width:1120px){.ccb-layout{grid-template-columns:1fr;}.ccb-side{max-height:none;}.ccb-chart{height:620px;}}
         </style>`;
       root.innerHTML = styles + `
         <div class="stats">
@@ -1051,25 +1195,6 @@
             <table><thead><tr><th>城市</th><th>公司</th><th>总市值</th><th>涨跌</th></tr></thead><tbody id="ccb-table"></tbody></table>
             <div id="ccb-detail" class="ccb-detail muted">点击地图气泡或城市排行查看行业和个股明细。</div>
           </aside>
-        </div>
-        <div class="ccb-ai">
-          <h3 style="margin:0 0 12px;font-size:16px;">AI 行业新闻关联分析</h3>
-          <div class="ccb-ai-grid">
-            <div><label>API Base URL</label><input id="ccb-ai-baseurl" placeholder="https://api.openai.com/v1" value="${escapeHtml(savedBaseUrl)}"></div>
-            <div><label>API Key</label><input id="ccb-ai-key" type="password" placeholder="sk-..." value="${escapeHtml(savedKey)}"></div>
-            <div><label>模型名称</label><input id="ccb-ai-model" placeholder="gpt-4o-mini" value="${escapeHtml(savedModel)}"></div>
-          </div>
-          <textarea id="ccb-ai-prompt">请基于当前筛选后的城市气泡图、行业分布、总市值、涨跌幅，以及近期相关新闻，分析哪些行业或城市带出现了明显异动，并说明可能的时间关联和需要继续验证的风险点。</textarea>
-          <div class="ccb-ai-actions">
-            <button id="ccb-ai-save">保存配置</button>
-            <button class="primary" id="ccb-ai-run">分析当前筛选</button>
-            <button id="ccb-ai-stop" style="display:none;">停止</button>
-            <button id="ccb-shot">生成图表截图</button>
-            <label class="ccb-pill"><input id="ccb-attach-shot" type="checkbox" style="padding:0;">随请求附带截图</label>
-          </div>
-          <div id="ccb-shot-preview" class="ccb-shot"></div>
-          <div id="ccb-ai-status" class="muted" style="font-size:12px;margin-bottom:8px;"></div>
-          <div id="ccb-ai-result" class="ccb-result muted">筛选后点击分析，会复用本地保存的 OpenAI 兼容 API 配置，并把图表结构化摘要和相关新闻发送给模型。</div>
         </div>`;
 
       const chart = echarts.init(document.getElementById('ccb-chart'));
@@ -1406,40 +1531,6 @@
           }]
         }, true);
       }
-      function buildAIContext() {
-        const industries = aggregateIndustries(currentFiltered).slice(0, 10);
-        const selectedIndustry = document.getElementById('ccb-industry').value;
-        const industryNames = selectedIndustry ? [selectedIndustry] : industries.map(x => x.industry).slice(0, 8);
-        const newsByIndustry = payload.news_by_industry || {};
-        const news = [];
-        industryNames.forEach(name => (newsByIndustry[name] || []).slice(0, 8).forEach(n => news.push({ industry: name, ...n })));
-        news.sort((a,b) => String(b.published_at || '').localeCompare(String(a.published_at || '')));
-        const filters = {
-          date: dateRangeLabel(selectedDateRange('ccb', dates)),
-          province: document.getElementById('ccb-province').value || '全部',
-          city: document.getElementById('ccb-city').value || '全部',
-          industry: selectedIndustry || '全部',
-          market_cap_bucket: document.getElementById('ccb-cap').value || 'all',
-          min_stock_count: document.getElementById('ccb-min-count').value || '未限制',
-        };
-        let text = '## A股城市气泡图筛选上下文\n';
-        text += '筛选条件: ' + JSON.stringify(filters, null, 2) + '\n\n';
-        text += '### 城市排行 Top 15\n';
-        currentFiltered.slice(0, 15).forEach((city, idx) => {
-          text += `${idx + 1}. ${city.province}${city.city}: 公司${city.stock_count}家, 总市值${formatMarketCap(city.total_market_cap)}, 加权涨跌${Number(city.avg_change_pct || 0).toFixed(2)}%, 上涨/下跌/平盘 ${city.up_count}/${city.down_count}/${city.flat_count}\n`;
-        });
-        text += '\n### 行业市值 Top 10\n';
-        industries.forEach((item, idx) => {
-          text += `${idx + 1}. ${item.industry}: 公司${item.stock_count}家, 市值${formatMarketCap(item.market_cap)}, 平均涨跌${Number(item.avg_change_pct || 0).toFixed(2)}%\n`;
-        });
-        text += '\n### 近期相关新闻\n';
-        news.slice(0, 28).forEach((n, idx) => {
-          text += `${idx + 1}. [${n.industry}/${n.sentiment || '中性'}] ${n.title} (${n.source || '-'}, ${n.published_at || '-'})\n`;
-          if (n.content) text += `   摘要: ${String(n.content).slice(0, 180)}\n`;
-        });
-        if (!news.length) text += '当前筛选行业暂无可关联新闻。\n';
-        return text;
-      }
       ['ccb-start','ccb-end'].forEach(id => document.getElementById(id).addEventListener('change', () => {
         fillFilters();
         draw();
@@ -1461,111 +1552,6 @@
         if (params.componentSubType === 'scatter') renderDetail(params.data);
       });
       window.addEventListener('resize', () => chart.resize());
-      document.getElementById('ccb-shot').addEventListener('click', () => {
-        const url = chart.getDataURL({ type: 'png', pixelRatio: 2, backgroundColor: '#ffffff' });
-        document.getElementById('ccb-shot-preview').innerHTML = `<a href="${url}" download="china-city-bubble-${escapeHtml(currentDate)}.png">下载截图</a><br><img src="${url}" alt="城市气泡图截图">`;
-      });
-      document.getElementById('ccb-ai-save').addEventListener('click', () => {
-        localStorage.setItem('ai_base_url', document.getElementById('ccb-ai-baseurl').value.trim());
-        localStorage.setItem('ai_api_key', document.getElementById('ccb-ai-key').value.trim());
-        localStorage.setItem('ai_model', document.getElementById('ccb-ai-model').value.trim());
-        document.getElementById('ccb-ai-status').textContent = '配置已保存到本地浏览器';
-      });
-      document.getElementById('ccb-ai-stop').addEventListener('click', () => {
-        if (abortController) abortController.abort();
-      });
-      document.getElementById('ccb-ai-run').addEventListener('click', async () => {
-        const baseUrl = (document.getElementById('ccb-ai-baseurl').value || localStorage.getItem('ai_base_url') || '').replace(/\/+$/, '');
-        const apiKey = document.getElementById('ccb-ai-key').value || localStorage.getItem('ai_api_key') || '';
-        const model = document.getElementById('ccb-ai-model').value || localStorage.getItem('ai_model') || '';
-        if (!baseUrl || !apiKey || !model) {
-          alert('请先配置 API Base URL、API Key 和模型名称');
-          return;
-        }
-        const prompt = document.getElementById('ccb-ai-prompt').value.trim();
-        const contextText = buildAIContext();
-        const attachShot = document.getElementById('ccb-attach-shot').checked;
-        const screenshot = attachShot ? chart.getDataURL({ type: 'png', pixelRatio: 1.5, backgroundColor: '#ffffff' }) : '';
-        const resultEl = document.getElementById('ccb-ai-result');
-        const statusEl = document.getElementById('ccb-ai-status');
-        const runBtn = document.getElementById('ccb-ai-run');
-        const stopBtn = document.getElementById('ccb-ai-stop');
-        resultEl.textContent = '正在请求 AI 分析...';
-        resultEl.classList.remove('muted');
-        statusEl.textContent = '';
-        runBtn.disabled = true;
-        stopBtn.style.display = 'inline-block';
-        abortController = new AbortController();
-        try {
-          const userContent = attachShot ? [
-            { type: 'text', text: contextText + '\n---\n' + prompt },
-            { type: 'image_url', image_url: { url: screenshot } }
-          ] : contextText + '\n---\n' + prompt;
-          const resp = await fetch(baseUrl + '/chat/completions', {
-            method: 'POST',
-            headers: {
-              'Content-Type': 'application/json',
-              'Authorization': 'Bearer ' + apiKey,
-            },
-            body: JSON.stringify({
-              model,
-              messages: [
-                { role: 'system', content: '你是一位专业的 A 股市场和产业新闻分析师。请基于结构化市场数据、城市分布和新闻事件做审慎分析，明确哪些结论来自数据，哪些只是待验证假设。回答使用中文。' },
-                { role: 'user', content: userContent }
-              ],
-              stream: true,
-              temperature: 0.5,
-              max_tokens: 2200,
-            }),
-            signal: abortController.signal,
-          });
-          if (!resp.ok) {
-            const errText = await resp.text();
-            throw new Error('API 请求失败 (' + resp.status + '): ' + errText.substring(0, 300));
-          }
-          const reader = resp.body.getReader();
-          const decoder = new TextDecoder();
-          let buffer = '';
-          let fullText = '';
-          let chunks = 0;
-          resultEl.textContent = '';
-          while (true) {
-            const { done, value } = await reader.read();
-            if (done) break;
-            buffer += decoder.decode(value, { stream: true });
-            const lines = buffer.split('\n');
-            buffer = lines.pop() || '';
-            for (const line of lines) {
-              const trimmed = line.trim();
-              if (!trimmed || !trimmed.startsWith('data:')) continue;
-              const data = trimmed.slice(5).trim();
-              if (data === '[DONE]') continue;
-              try {
-                const json = JSON.parse(data);
-                const delta = json.choices && json.choices[0] && json.choices[0].delta;
-                if (delta && delta.content) {
-                  fullText += delta.content;
-                  chunks++;
-                  resultEl.textContent = fullText;
-                }
-              } catch (e) { /* ignore malformed stream chunk */ }
-            }
-          }
-          statusEl.textContent = '分析完成，共 ' + chunks + ' 个流式片段';
-        } catch (err) {
-          if (err.name === 'AbortError') {
-            resultEl.textContent += '\n\n已停止生成';
-            statusEl.textContent = '已手动停止';
-          } else {
-            resultEl.textContent = '错误: ' + err.message;
-            statusEl.textContent = '请求失败';
-          }
-        } finally {
-          runBtn.disabled = false;
-          stopBtn.style.display = 'none';
-          abortController = null;
-        }
-      });
       fillFilters();
       draw();
     }
@@ -1704,6 +1690,765 @@
       }
       ['mi-start','mi-end'].forEach(id => document.getElementById(id).addEventListener('change', draw));
       draw();
+    }
+
+    /* ==================== 分析配置 ==================== */
+    function renderAnalysisConfig(root) {
+      const savedServices = JSON.parse(localStorage.getItem('sn_backend_services') || '[{"name":"本地服务","url":"http://localhost:8030/api","default":true}]');
+      const savedModels = JSON.parse(localStorage.getItem('sn_llm_models') || '[]');
+      const savedCollectPrompt = localStorage.getItem('sn_collect_prompt') || `请搜索并整理{stock_name}({stock_code})在{start_date}至{end_date}期间的以下数据：
+
+1. 股票行情数据
+   - 每日开盘价、收盘价、最高价、最低价
+   - 涨跌幅、成交量、成交额
+
+2. 龙虎榜数据
+   - 买入席位名称、买入金额
+   - 卖出席位名称、卖出金额
+
+3. 新闻公告数据
+   - 重大新闻事件
+   - 公司公告
+   - 行业动态
+
+4. 实时行情
+   - 当前价格、涨跌幅
+   - 市盈率、市值
+
+请以结构化格式返回以上数据。`;
+      const savedAnalyzePrompt = localStorage.getItem('sn_analyze_prompt') || '请基于以上数据，从资金面、消息面、技术面三个维度综合分析{stock_name}的近期走势，给出投资建议和风险提示。';
+
+      const styles = `
+        <style>
+          .cfg-layout{display:grid;grid-template-columns:1fr 1fr;gap:20px;align-items:start;}
+          .cfg-card{background:var(--card);border:1px solid var(--line);border-radius:16px;padding:20px;}
+          .cfg-card h4{margin:0 0 16px;font-size:15px;color:var(--accent);border-bottom:1px solid var(--line);padding-bottom:10px;}
+          .cfg-form-group{margin-bottom:14px;}
+          .cfg-form-group label{display:block;font-size:12px;color:var(--muted);margin-bottom:4px;font-weight:500;}
+          .cfg-form-group input,.cfg-form-group textarea{width:100%;padding:10px 12px;font-size:13px;border:1px solid var(--line);border-radius:10px;font-family:inherit;}
+          .cfg-form-group textarea{min-height:120px;resize:vertical;}
+          .cfg-btn-row{display:flex;gap:8px;margin-top:12px;}
+          .cfg-btn{padding:8px 16px;font-size:13px;border-radius:10px;cursor:pointer;border:1px solid var(--line);background:#fff;}
+          .cfg-btn.primary{background:linear-gradient(135deg,var(--accent),var(--accent-2));color:#fff;border:none;}
+          .cfg-btn.danger{color:var(--danger);border-color:var(--danger);}
+          .cfg-btn:hover{opacity:0.9;}
+          .cfg-list{margin-top:12px;}
+          .cfg-list-item{display:flex;justify-content:space-between;align-items:center;padding:10px 12px;background:#f8faf7;border-radius:10px;margin-bottom:8px;font-size:13px;}
+          .cfg-list-item .name{font-weight:600;}
+          .cfg-list-item .url{color:var(--muted);font-size:11px;}
+          .cfg-list-item .actions{display:flex;gap:6px;}
+          .cfg-list-item .tag{font-size:10px;padding:2px 6px;border-radius:4px;background:#dbeafe;color:#1e40af;}
+          .cfg-list-item .tag.default{background:#dcfce7;color:#166534;}
+          .cfg-prompt-vars{font-size:11px;color:var(--muted);margin-top:6px;line-height:1.6;}
+          .cfg-prompt-vars code{background:#f1f5f9;padding:1px 4px;border-radius:3px;font-size:10px;}
+          @media(max-width:1100px){.cfg-layout{grid-template-columns:1fr;}}
+        </style>`;
+
+      function renderServices() {
+        return savedServices.map((s, i) => `
+          <div class="cfg-list-item">
+            <div>
+              <span class="name">${escapeHtml(s.name)}</span>
+              ${s.default ? '<span class="tag default">默认</span>' : ''}
+              <div class="url">${escapeHtml(s.url)}</div>
+            </div>
+            <div class="actions">
+              ${!s.default ? '<button class="cfg-btn" onclick="setServiceDefault(' + i + ')">设为默认</button>' : ''}
+              ${!s.default ? '<button class="cfg-btn danger" onclick="removeService(' + i + ')">删除</button>' : ''}
+            </div>
+          </div>
+        `).join('');
+      }
+
+      function renderModels() {
+        return savedModels.map((m, i) => `
+          <div class="cfg-list-item">
+            <div>
+              <span class="name">${escapeHtml(m.name)}</span>
+              ${m.default ? '<span class="tag default">默认</span>' : ''}
+              <div class="url">${escapeHtml(m.baseUrl)} | ${escapeHtml(m.model)}</div>
+            </div>
+            <div class="actions">
+              ${!m.default ? '<button class="cfg-btn" onclick="setModelDefault(' + i + ')">设为默认</button>' : ''}
+              <button class="cfg-btn danger" onclick="removeModel(${i})">删除</button>
+            </div>
+          </div>
+        `).join('');
+      }
+
+      root.innerHTML = styles + `
+        <h3 style="margin:0 0 20px;">分析配置</h3>
+        <div class="cfg-layout">
+          <div>
+            <div class="cfg-card">
+              <h4>后端服务配置</h4>
+              <div class="cfg-form-group">
+                <label>服务名称</label>
+                <input id="cfg-service-name" placeholder="如: 本地服务">
+              </div>
+              <div class="cfg-form-group">
+                <label>API 地址</label>
+                <input id="cfg-service-url" placeholder="http://localhost:8030/api">
+              </div>
+              <div class="cfg-btn-row">
+                <button class="cfg-btn primary" id="cfg-add-service">添加服务</button>
+              </div>
+              <div class="cfg-list" id="cfg-services-list">${renderServices()}</div>
+            </div>
+
+            <div class="cfg-card" style="margin-top:20px;">
+              <h4>大模型配置</h4>
+              <div class="cfg-form-group">
+                <label>模型名称</label>
+                <input id="cfg-model-name" placeholder="如: deepseek-chat">
+              </div>
+              <div class="cfg-form-group">
+                <label>Base URL</label>
+                <input id="cfg-model-url" placeholder="https://api.deepseek.com/v1">
+              </div>
+              <div class="cfg-form-group">
+                <label>API Key</label>
+                <input id="cfg-model-key" type="password" placeholder="sk-...">
+              </div>
+              <div class="cfg-form-group">
+                <label>模型标识</label>
+                <input id="cfg-model-id" placeholder="deepseek-chat">
+              </div>
+              <div class="cfg-btn-row">
+                <button class="cfg-btn primary" id="cfg-add-model">添加模型</button>
+              </div>
+              <div class="cfg-list" id="cfg-models-list">${renderModels()}</div>
+            </div>
+          </div>
+
+          <div>
+            <div class="cfg-card">
+              <h4>采集提示词</h4>
+              <div class="cfg-form-group">
+                <label>AI采集时使用的提示词模板</label>
+                <textarea id="cfg-collect-prompt">${escapeHtml(savedCollectPrompt)}</textarea>
+              </div>
+              <div class="cfg-prompt-vars">
+                可用变量: <code>{stock_code}</code> <code>{stock_name}</code> <code>{start_date}</code> <code>{end_date}</code>
+              </div>
+            </div>
+
+            <div class="cfg-card" style="margin-top:20px;">
+              <h4>分析提示词</h4>
+              <div class="cfg-form-group">
+                <label>智能分析时使用的提示词模板</label>
+                <textarea id="cfg-analyze-prompt">${escapeHtml(savedAnalyzePrompt)}</textarea>
+              </div>
+              <div class="cfg-prompt-vars">
+                可用变量: <code>{stock_code}</code> <code>{stock_name}</code> <code>{start_date}</code> <code>{end_date}</code>
+                <code>{stock_kline_data}</code> <code>{dragon_tiger_data}</code> <code>{news_data}</code>
+              </div>
+            </div>
+
+            <div class="cfg-btn-row" style="margin-top:20px;">
+              <button class="cfg-btn primary" id="cfg-save-all" style="flex:1;">保存所有配置</button>
+            </div>
+          </div>
+        </div>`;
+
+      // 添加服务
+      document.getElementById('cfg-add-service').addEventListener('click', () => {
+        const name = document.getElementById('cfg-service-name').value.trim();
+        const url = document.getElementById('cfg-service-url').value.trim();
+        if (!name || !url) { alert('请填写服务名称和API地址'); return; }
+        savedServices.push({ name, url, default: savedServices.length === 0 });
+        localStorage.setItem('sn_backend_services', JSON.stringify(savedServices));
+        document.getElementById('cfg-services-list').innerHTML = renderServices();
+        document.getElementById('cfg-service-name').value = '';
+        document.getElementById('cfg-service-url').value = '';
+      });
+
+      // 添加模型
+      document.getElementById('cfg-add-model').addEventListener('click', () => {
+        const name = document.getElementById('cfg-model-name').value.trim();
+        const baseUrl = document.getElementById('cfg-model-url').value.trim();
+        const apiKey = document.getElementById('cfg-model-key').value.trim();
+        const model = document.getElementById('cfg-model-id').value.trim();
+        if (!name || !baseUrl || !apiKey || !model) { alert('请填写所有模型配置项'); return; }
+        savedModels.push({ name, baseUrl, apiKey, model, default: savedModels.length === 0 });
+        localStorage.setItem('sn_llm_models', JSON.stringify(savedModels));
+        document.getElementById('cfg-models-list').innerHTML = renderModels();
+        document.getElementById('cfg-model-name').value = '';
+        document.getElementById('cfg-model-url').value = '';
+        document.getElementById('cfg-model-key').value = '';
+        document.getElementById('cfg-model-id').value = '';
+      });
+
+      // 保存所有配置
+      document.getElementById('cfg-save-all').addEventListener('click', () => {
+        localStorage.setItem('sn_collect_prompt', document.getElementById('cfg-collect-prompt').value);
+        localStorage.setItem('sn_analyze_prompt', document.getElementById('cfg-analyze-prompt').value);
+        alert('配置已保存');
+      });
+
+      // 全局函数供onclick使用
+      window.setServiceDefault = (idx) => {
+        savedServices.forEach((s, i) => s.default = (i === idx));
+        localStorage.setItem('sn_backend_services', JSON.stringify(savedServices));
+        document.getElementById('cfg-services-list').innerHTML = renderServices();
+      };
+      window.removeService = (idx) => {
+        savedServices.splice(idx, 1);
+        localStorage.setItem('sn_backend_services', JSON.stringify(savedServices));
+        document.getElementById('cfg-services-list').innerHTML = renderServices();
+      };
+      window.setModelDefault = (idx) => {
+        savedModels.forEach((m, i) => m.default = (i === idx));
+        localStorage.setItem('sn_llm_models', JSON.stringify(savedModels));
+        document.getElementById('cfg-models-list').innerHTML = renderModels();
+      };
+      window.removeModel = (idx) => {
+        savedModels.splice(idx, 1);
+        localStorage.setItem('sn_llm_models', JSON.stringify(savedModels));
+        document.getElementById('cfg-models-list').innerHTML = renderModels();
+      };
+    }
+
+    /* ==================== 智能分析 ==================== */
+    function renderSmartAnalysis(root, data) {
+      const newsPayload = data.news || {};
+      const aiPayload = data.ai || {};
+      const stockNews = newsPayload.stock_news || {};
+      const stockCodes = newsPayload.stock_codes || [];
+      const aiStockNames = aiPayload.stock_names || {};
+      const stockContexts = aiPayload.stock_contexts || {};
+      const stockNameMap = { ...state.stockNames, ...aiStockNames };
+
+      // 从上下文中补充股票名称
+      Object.entries(stockContexts).forEach(([code, ctx]) => {
+        if (!stockNameMap[code]) {
+          const dt = ctx.dragon_tiger || [];
+          if (dt.length > 0 && dt[0].operations && dt[0].operations.length > 0) {
+            stockNameMap[code] = dt[0].operations[0].stockName || '';
+          }
+        }
+      });
+
+      // 读取配置
+      const services = JSON.parse(localStorage.getItem('sn_backend_services') || '[{"name":"本地服务","url":"http://localhost:8030/api","default":true}]');
+      const models = JSON.parse(localStorage.getItem('sn_llm_models') || '[]');
+      const defaultModel = models.find(m => m.default) || models[0];
+      const defaultService = services.find(s => s.default) || services[0];
+      const collectPrompt = localStorage.getItem('sn_collect_prompt') || '';
+      const analyzePrompt = localStorage.getItem('sn_analyze_prompt') || '';
+
+      let currentStockCode = '';
+      let currentStockName = '';
+      let currentNews = [];
+      let currentContext = {};
+      let isCollecting = false;
+      let isAnalyzing = false;
+
+      const styles = `
+        <style>
+          .sa-layout{display:grid;grid-template-columns:1fr;gap:16px;}
+          .sa-filter{background:var(--card);border:1px solid var(--line);border-radius:16px;padding:16px;display:flex;gap:12px;flex-wrap:wrap;align-items:center;}
+          .sa-filter select,.sa-filter input{padding:10px 12px;font-size:14px;border:1px solid var(--line);border-radius:12px;}
+          .sa-filter select{min-width:180px;}
+          .sa-data{background:var(--card);border:1px solid var(--line);border-radius:16px;padding:20px;}
+          .sa-data h4{margin:0 0 14px;font-size:15px;color:var(--accent);}
+          .sa-data-section{margin-bottom:20px;}
+          .sa-data-section h5{margin:0 0 10px;font-size:13px;color:var(--muted);font-weight:600;}
+          .sa-kline-table{width:100%;border-collapse:collapse;font-size:12px;}
+          .sa-kline-table th,.sa-kline-table td{padding:8px;border-bottom:1px solid #edf0e8;text-align:left;}
+          .sa-kline-table th{background:#f8faf7;font-weight:600;color:var(--muted);}
+          .sa-news-item{padding:10px 0;border-bottom:1px solid #edf0e8;font-size:13px;text-align:left;}
+          .sa-news-item:last-child{border-bottom:none;}
+          .sa-news-item .title{font-weight:600;margin-bottom:4px;}
+          .sa-news-item .meta{font-size:11px;color:var(--muted);}
+          .sa-dt-item{padding:8px 0;border-bottom:1px solid #edf0e8;font-size:12px;text-align:left;}
+          .sa-dt-item:last-child{border-bottom:none;}
+          .sa-analyze{background:var(--card);border:1px solid var(--line);border-radius:16px;padding:20px;text-align:left;}
+          .sa-analyze h4{margin:0 0 14px;font-size:15px;color:var(--accent);}
+          .sa-analyze-controls{display:grid;grid-template-columns:200px 1fr auto;gap:12px;align-items:start;margin-bottom:14px;}
+          .sa-control-label{font-size:11px;color:var(--muted);margin-bottom:4px;display:block;}
+          .sa-analyze-controls select{width:100%;padding:10px 12px;font-size:13px;border:1px solid var(--line);border-radius:10px;}
+          .sa-analyze-controls textarea{width:100%;min-height:60px;padding:10px 12px;font-size:13px;border:1px solid var(--line);border-radius:10px;resize:vertical;font-family:inherit;}
+          .sa-analyze-controls .sa-btn{align-self:end;height:40px;}
+          .sa-result{min-height:200px;line-height:1.8;font-size:14px;text-align:left;}
+          .sa-result.rendered h1,.sa-result.rendered h2,.sa-result.rendered h3{margin:16px 0 8px;font-weight:700;}
+          .sa-result.rendered p{margin:8px 0;}
+          .sa-result.rendered ul,.sa-result.rendered ol{margin:8px 0;padding-left:24px;}
+          .sa-result.rendered strong{color:var(--accent);}
+          .sa-result.raw{white-space:pre-wrap;font-family:monospace;font-size:13px;background:#f8faf7;padding:14px;border-radius:10px;text-align:left;}
+          .sa-empty{padding:40px;text-align:center;color:var(--muted);border:1px dashed var(--line);border-radius:16px;}
+          .sa-loading{display:flex;align-items:center;justify-content:center;gap:8px;padding:20px;color:var(--muted);}
+          .sa-loading-dot{width:6px;height:6px;background:var(--accent);border-radius:50%;animation:sa-bounce 1.4s ease-in-out infinite;}
+          .sa-loading-dot:nth-child(2){animation-delay:0.2s;}
+          .sa-loading-dot:nth-child(3){animation-delay:0.4s;}
+          @keyframes sa-bounce{0%,80%,100%{transform:scale(0.6);opacity:0.4}40%{transform:scale(1);opacity:1}}
+          .sa-btn{padding:10px 18px;font-size:13px;border-radius:10px;cursor:pointer;border:1px solid var(--line);background:#fff;}
+          .sa-btn.primary{background:linear-gradient(135deg,var(--accent),var(--accent-2));color:#fff;border:none;}
+          .sa-btn:disabled{opacity:0.6;cursor:not-allowed;}
+          .sa-tabs{display:flex;gap:4px;background:#f1f5f9;border-radius:10px;padding:3px;}
+          .sa-tabs button{padding:6px 14px;font-size:12px;border-radius:8px;border:none;background:transparent;cursor:pointer;color:var(--muted);}
+          .sa-tabs button.active{background:#fff;color:var(--text);box-shadow:0 1px 3px rgba(0,0,0,0.1);}
+          .sa-source-tag{font-size:10px;padding:2px 6px;border-radius:4px;margin-left:6px;}
+          .sa-source-tag.local{background:#dbeafe;color:#1e40af;}
+          .sa-source-tag.ai{background:#fef3c7;color:#92400e;}
+          .sa-source-tag.server{background:#dcfce7;color:#166534;}
+          .sa-section-title{font-size:14px;font-weight:700;color:var(--accent);margin:0 0 14px;padding-bottom:10px;border-bottom:1px solid var(--line);}
+          @media(max-width:900px){.sa-filter{flex-direction:column;align-items:stretch;}.sa-analyze-controls{grid-template-columns:1fr;}}
+        </style>`;
+
+      function renderPage() {
+        root.innerHTML = styles + `
+          <h3 style="margin:0 0 16px;">智能分析</h3>
+          <div class="sa-layout">
+            <div class="sa-filter">
+              <div>
+                <label class="sa-control-label">选择股票</label>
+                <select id="sa-stock-select">
+                  <option value="">-- 请选择 --</option>
+                  ${Object.entries(stockNameMap).slice(0, 2000).map(([code, name]) => `<option value="${escapeHtml(code)}">${escapeHtml(code)} ${escapeHtml(name)}</option>`).join('')}
+                </select>
+              </div>
+              <div>
+                <label class="sa-control-label">开始日期</label>
+                <input type="date" id="sa-start-date">
+              </div>
+              <div>
+                <label class="sa-control-label">结束日期</label>
+                <input type="date" id="sa-end-date">
+              </div>
+              <div style="display:flex;gap:8px;align-self:end;">
+                <button class="sa-btn" id="sa-reset">重置</button>
+                <button class="sa-btn" id="sa-server-collect" ${!defaultService ? 'disabled title="请先在分析配置中配置后端服务"' : ''}>服务端采集</button>
+                <button class="sa-btn primary" id="sa-ai-collect" ${!defaultModel ? 'disabled title="请先在分析配置中配置大模型"' : ''}>AI 采集</button>
+              </div>
+            </div>
+            <div class="sa-data" id="sa-data-area">
+              <div class="sa-section-title">股票数据</div>
+              <div class="sa-empty">请选择股票查看数据</div>
+            </div>
+            <div class="sa-analyze" id="sa-analyze-area">
+              <div class="sa-section-title">AI 分析</div>
+              <div class="sa-analyze-controls">
+                <div>
+                  <label class="sa-control-label">选择模型</label>
+                  <select id="sa-model-select">
+                    ${models.length > 0 ? models.map(m => `<option value="${escapeHtml(m.name)}" ${m.default ? 'selected' : ''}>${escapeHtml(m.name)}</option>`).join('') : '<option value="">请先配置模型</option>'}
+                  </select>
+                </div>
+                <div>
+                  <label class="sa-control-label">分析提示词（可自定义）</label>
+                  <textarea id="sa-analyze-prompt">${escapeHtml(analyzePrompt)}</textarea>
+                </div>
+                <div>
+                  <label class="sa-control-label">&nbsp;</label>
+                  <button class="sa-btn primary" id="sa-analyze-btn" ${!defaultModel ? 'disabled' : ''}>开始分析</button>
+                </div>
+              </div>
+              <div id="sa-result-tabs" style="display:none;margin-bottom:10px;">
+                <div class="sa-tabs">
+                  <button class="active" data-mode="rendered">渲染</button>
+                  <button data-mode="raw">原文</button>
+                </div>
+              </div>
+              <div class="sa-result rendered" id="sa-result-content">
+                <div style="color:var(--muted);">选择股票并采集数据后，点击"开始分析"</div>
+              </div>
+            </div>
+          </div>`;
+
+        // 设置默认日期
+        const today = new Date();
+        const weekAgo = new Date(today);
+        weekAgo.setDate(weekAgo.getDate() - 7);
+        document.getElementById('sa-end-date').value = today.toISOString().split('T')[0];
+        document.getElementById('sa-start-date').value = weekAgo.toISOString().split('T')[0];
+
+        bindEvents();
+      }
+
+      function bindEvents() {
+        // 股票选择
+        document.getElementById('sa-stock-select').addEventListener('change', (e) => {
+          const code = e.target.value;
+          if (code) {
+            currentStockCode = code;
+            currentStockName = stockNameMap[code] || '';
+            loadStockData();
+          }
+        });
+
+        // 重置
+        document.getElementById('sa-reset').addEventListener('click', () => {
+          document.getElementById('sa-stock-select').value = '';
+          currentStockCode = '';
+          currentStockName = '';
+          currentNews = [];
+          currentContext = {};
+          document.getElementById('sa-data-area').innerHTML = '<div class="sa-section-title">股票数据</div><div class="sa-empty">请选择股票查看数据</div>';
+          document.getElementById('sa-result-content').innerHTML = '<div style="color:var(--muted);">选择股票并采集数据后，点击"开始分析"</div>';
+          document.getElementById('sa-result-tabs').style.display = 'none';
+        });
+
+        // 服务端采集
+        document.getElementById('sa-server-collect').addEventListener('click', handleServerCollect);
+
+        // AI采集
+        document.getElementById('sa-ai-collect').addEventListener('click', handleAICollect);
+
+        // 分析
+        document.getElementById('sa-analyze-btn').addEventListener('click', handleAnalyze);
+
+        // 结果切换
+        document.getElementById('sa-result-tabs')?.querySelectorAll('button').forEach(btn => {
+          btn.addEventListener('click', () => {
+            document.getElementById('sa-result-tabs').querySelectorAll('button').forEach(b => b.classList.remove('active'));
+            btn.classList.add('active');
+            const content = document.getElementById('sa-result-content');
+            if (btn.dataset.mode === 'raw') {
+              content.className = 'sa-result raw';
+              content.textContent = currentRawText || '';
+            } else {
+              content.className = 'sa-result rendered';
+              content.innerHTML = renderMarkdown(currentRawText || '');
+            }
+          });
+        });
+      }
+
+      function loadStockData() {
+        currentNews = stockNews[currentStockCode] || [];
+        currentContext = stockContexts[currentStockCode] || {};
+        renderDataArea();
+      }
+
+      function renderDataArea() {
+        const area = document.getElementById('sa-data-area');
+        const startDate = document.getElementById('sa-start-date').value;
+        const endDate = document.getElementById('sa-end-date').value;
+        const displayName = currentStockName ? `${currentStockCode} ${currentStockName}` : currentStockCode;
+
+        // 过滤新闻
+        const filteredNews = currentNews.filter(n => {
+          const at = n.published_at || '';
+          if (startDate && at < startDate) return false;
+          if (endDate && at > endDate + ' 23:59:59') return false;
+          return true;
+        });
+
+        // 龙虎榜数据
+        const dt = (currentContext.dragon_tiger || []).filter(d => {
+          if (startDate && d.date < startDate) return false;
+          if (endDate && d.date > endDate) return false;
+          return true;
+        });
+
+        let html = `<div class="sa-section-title">股票数据 - ${escapeHtml(displayName)} <span style="font-size:12px;color:var(--muted);font-weight:400;">数据区间: ${escapeHtml(startDate || '-')} ~ ${escapeHtml(endDate || '-')}</span></div>`;
+
+        // 新闻数据
+        html += `<div class="sa-data-section">
+          <h5>新闻数据 (${filteredNews.length}条)</h5>`;
+        if (filteredNews.length === 0) {
+          html += '<div style="color:var(--muted);font-size:13px;">暂无新闻数据，可点击"AI采集"获取</div>';
+        } else {
+          html += filteredNews.slice(0, 20).map(n => {
+            const sCls = n.sentiment === '利好' ? 'positive' : n.sentiment === '利空' ? 'negative' : 'neutral';
+            const sourceTag = n.isAI ? '<span class="sa-source-tag ai">AI</span>' : '<span class="sa-source-tag local">本地</span>';
+            return `<div class="sa-news-item">
+              <div class="title">${escapeHtml(n.title)}${sourceTag}</div>
+              <div class="meta">${escapeHtml(n.published_at || '')} · ${escapeHtml(n.source || '')} · <span class="sentiment-tag ${sCls}">${escapeHtml(n.sentiment || '中性')}</span></div>
+            </div>`;
+          }).join('');
+        }
+        html += '</div>';
+
+        // 龙虎榜数据
+        html += `<div class="sa-data-section">
+          <h5>龙虎榜数据 (${dt.length}个交易日)</h5>`;
+        if (dt.length === 0) {
+          html += '<div style="color:var(--muted);font-size:13px;">暂无龙虎榜数据</div>';
+        } else {
+          html += dt.slice(0, 5).map(d => {
+            const ops = (d.operations || []).slice(0, 5);
+            return `<div class="sa-dt-item">
+              <strong>${escapeHtml(d.date)}</strong>
+              ${ops.map(op => `<div style="margin-left:12px;"><span class="${op.direction === '买入' ? 'buy' : 'sell'}">${escapeHtml(op.direction || '')}</span> ${escapeHtml(op.seatName || op.seat_name || '')} ${op.amount != null ? fmtAmount(op.amount) : ''}</div>`).join('')}
+            </div>`;
+          }).join('');
+        }
+        html += '</div>';
+
+        area.innerHTML = html;
+      }
+
+      // 服务端采集
+      async function handleServerCollect() {
+        if (!currentStockCode) { alert('请先选择股票'); return; }
+        if (!defaultService) { alert('请先配置后端服务'); return; }
+
+        isCollecting = true;
+        const btn = document.getElementById('sa-server-collect');
+        btn.disabled = true;
+        btn.textContent = '采集中...';
+
+        try {
+          const startDate = document.getElementById('sa-start-date').value;
+          const endDate = document.getElementById('sa-end-date').value;
+          const resp = await fetch(`${defaultService.url}/news/sync`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ codes: [currentStockCode], limit: 30 })
+          });
+          const result = await resp.json();
+          if (result.success) {
+            alert(`采集完成，新增 ${result.result?.inserted || 0} 条新闻`);
+            window.location.reload();
+          } else {
+            alert('采集失败: ' + (result.error || '未知错误'));
+          }
+        } catch (err) {
+          alert('采集失败: ' + err.message);
+        } finally {
+          isCollecting = false;
+          btn.disabled = false;
+          btn.textContent = '服务端采集';
+        }
+      }
+
+      // AI采集
+      async function handleAICollect() {
+        if (!currentStockCode) { alert('请先选择股票'); return; }
+        if (!defaultModel) { alert('请先配置大模型'); return; }
+
+        const startDate = document.getElementById('sa-start-date').value;
+        const endDate = document.getElementById('sa-end-date').value;
+
+        isCollecting = true;
+        const btn = document.getElementById('sa-ai-collect');
+        btn.disabled = true;
+        btn.textContent = 'AI采集中...';
+
+        // 构建采集提示词
+        const prompt = collectPrompt
+          .replace(/\{stock_code\}/g, currentStockCode)
+          .replace(/\{stock_name\}/g, currentStockName)
+          .replace(/\{start_date\}/g, startDate)
+          .replace(/\{end_date\}/g, endDate);
+
+        try {
+          const result = await callLLM(defaultModel, prompt, 3000);
+          // 将AI采集结果添加到新闻列表
+          const aiNewsItem = {
+            title: `AI采集: ${currentStockName || currentStockCode}`,
+            content: result,
+            published_at: new Date().toISOString().slice(0, 19).replace('T', ' '),
+            source: 'AI采集',
+            sentiment: '中性',
+            isAI: true,
+          };
+          currentNews = [aiNewsItem, ...currentNews];
+          renderDataArea();
+        } catch (err) {
+          alert('AI采集失败: ' + err.message);
+        } finally {
+          isCollecting = false;
+          btn.disabled = false;
+          btn.textContent = 'AI 采集';
+        }
+      }
+
+      // 智能分析
+      let currentRawText = '';
+      async function handleAnalyze() {
+        if (!currentStockCode) { alert('请先选择股票'); return; }
+        const selectedModelName = document.getElementById('sa-model-select').value;
+        const model = models.find(m => m.name === selectedModelName);
+        if (!model) { alert('请先配置大模型'); return; }
+
+        const startDate = document.getElementById('sa-start-date').value;
+        const endDate = document.getElementById('sa-end-date').value;
+        const userPrompt = document.getElementById('sa-analyze-prompt').value.trim() || analyzePrompt;
+
+        isAnalyzing = true;
+        const btn = document.getElementById('sa-analyze-btn');
+        btn.disabled = true;
+        btn.textContent = '分析中...';
+
+        const resultContent = document.getElementById('sa-result-content');
+        resultContent.className = 'sa-result rendered';
+        resultContent.innerHTML = '<div class="sa-loading"><div class="sa-loading-dot"></div><div class="sa-loading-dot"></div><div class="sa-loading-dot"></div><span>正在分析...</span></div>';
+
+        // 构建数据上下文
+        const filteredNews = currentNews.filter(n => {
+          const at = n.published_at || '';
+          if (startDate && at < startDate) return false;
+          if (endDate && at > endDate + ' 23:59:59') return false;
+          return true;
+        });
+        const dt = (currentContext.dragon_tiger || []).filter(d => {
+          if (startDate && d.date < startDate) return false;
+          if (endDate && d.date > endDate) return false;
+          return true;
+        });
+
+        let dataContext = '';
+        if (filteredNews.length > 0) {
+          dataContext += '## 新闻数据\n';
+          filteredNews.slice(0, 15).forEach((n, i) => {
+            dataContext += `${i+1}. [${n.sentiment || '中性'}] ${n.title} (${n.published_at || ''})\n`;
+          });
+        }
+        if (dt.length > 0) {
+          dataContext += '\n## 龙虎榜数据\n';
+          dt.forEach(d => {
+            dataContext += `日期: ${d.date}\n`;
+            (d.operations || []).slice(0, 5).forEach(op => {
+              dataContext += `  ${(op.direction || '')} ${(op.seatName || op.seat_name || '')} ${op.amount != null ? fmtAmount(op.amount) : ''}\n`;
+            });
+          });
+        }
+
+        const fullPrompt = userPrompt
+          .replace(/\{stock_code\}/g, currentStockCode)
+          .replace(/\{stock_name\}/g, currentStockName)
+          .replace(/\{start_date\}/g, startDate)
+          .replace(/\{end_date\}/g, endDate)
+          .replace(/\{news_data\}/g, filteredNews.length > 0 ? filteredNews.slice(0, 15).map((n, i) => `${i+1}. [${n.sentiment || '中性'}] ${n.title} (${n.published_at || ''})`).join('\n') : '暂无')
+          .replace(/\{dragon_tiger_data\}/g, dt.length > 0 ? dt.map(d => `${d.date}: ${(d.operations || []).slice(0, 3).map(op => `${op.direction} ${op.seatName || op.seat_name} ${op.amount != null ? fmtAmount(op.amount) : ''}`).join(', ')}`).join('\n') : '暂无')
+          .replace(/\{stock_kline_data\}/g, '暂无');
+
+        try {
+          currentRawText = '';
+          document.getElementById('sa-result-tabs').style.display = 'flex';
+          
+          const apiUrl = model.baseUrl + '/chat/completions';
+          const resp = await fetch(apiUrl, {
+            method: 'POST',
+            headers: {
+              'Content-Type': 'application/json',
+              'Authorization': 'Bearer ' + model.apiKey,
+            },
+            body: JSON.stringify({
+              model: model.model,
+              messages: [
+                { role: 'system', content: '你是一位专业的 A 股市场分析师。请基于提供的数据，给出专业、客观的分析。回答使用中文，使用 Markdown 格式输出。' },
+                { role: 'user', content: fullPrompt + (dataContext ? '\n\n## 已有数据\n' + dataContext : '') }
+              ],
+              stream: true,
+              temperature: 0.7,
+              max_tokens: 2000,
+            }),
+          });
+
+          if (!resp.ok) {
+            const errText = await resp.text();
+            throw new Error('API 请求失败 (' + resp.status + '): ' + errText.substring(0, 200));
+          }
+
+          const reader = resp.body.getReader();
+          const decoder = new TextDecoder();
+          let buffer = '';
+
+          while (true) {
+            const { done, value } = await reader.read();
+            if (done) break;
+            buffer += decoder.decode(value, { stream: true });
+            const lines = buffer.split('\n');
+            buffer = lines.pop() || '';
+            for (const line of lines) {
+              const trimmed = line.trim();
+              if (!trimmed || !trimmed.startsWith('data:')) continue;
+              const d = trimmed.slice(5).trim();
+              if (d === '[DONE]') continue;
+              try {
+                const json = JSON.parse(d);
+                const delta = json.choices && json.choices[0] && json.choices[0].delta;
+                if (delta && delta.content) {
+                  currentRawText += delta.content;
+                  const activeMode = document.getElementById('sa-result-tabs').querySelector('button.active')?.dataset.mode || 'rendered';
+                  if (activeMode === 'rendered') {
+                    resultContent.innerHTML = renderMarkdown(currentRawText);
+                  } else {
+                    resultContent.textContent = currentRawText;
+                  }
+                  resultContent.scrollTop = resultContent.scrollHeight;
+                }
+              } catch (e) { /* skip */ }
+            }
+          }
+        } catch (err) {
+          resultContent.innerHTML = `<div style="color:var(--danger);">分析失败: ${escapeHtml(err.message)}</div>`;
+        } finally {
+          isAnalyzing = false;
+          btn.disabled = false;
+          btn.textContent = '开始分析';
+        }
+      }
+
+      // 调用大模型
+      async function callLLM(model, prompt, maxTokens = 2000) {
+        const apiUrl = model.baseUrl + '/chat/completions';
+        const resp = await fetch(apiUrl, {
+          method: 'POST',
+          headers: {
+            'Content-Type': 'application/json',
+            'Authorization': 'Bearer ' + model.apiKey,
+          },
+          body: JSON.stringify({
+            model: model.model,
+            messages: [
+              { role: 'system', content: '你是一位专业的 A 股市场分析师和数据采集助手。请根据要求搜索并整理数据，或进行分析。回答使用中文。' },
+              { role: 'user', content: prompt }
+            ],
+            stream: false,
+            temperature: 0.7,
+            max_tokens: maxTokens,
+          }),
+        });
+
+        if (!resp.ok) {
+          const errText = await resp.text();
+          throw new Error('API 请求失败 (' + resp.status + '): ' + errText.substring(0, 200));
+        }
+
+        const result = await resp.json();
+        return result.choices?.[0]?.message?.content || '';
+      }
+
+      // Markdown 渲染
+      function renderMarkdown(text) {
+        let html = escapeHtml(text);
+        html = html.replace(/^### (.+)$/gm, '<h3>$1</h3>');
+        html = html.replace(/^## (.+)$/gm, '<h2>$1</h2>');
+        html = html.replace(/^# (.+)$/gm, '<h1>$1</h1>');
+        html = html.replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>');
+        html = html.replace(/\*(.+?)\*/g, '<em>$1</em>');
+        html = html.replace(/`([^`]+)`/g, '<code>$1</code>');
+        html = html.replace(/```[\s\S]*?```/g, function(match) {
+          const code = match.slice(3, -3).replace(/^[a-z]*\n/, '');
+          return '<pre><code>' + code + '</code></pre>';
+        });
+        html = html.replace(/^&gt; (.+)$/gm, '<blockquote>$1</blockquote>');
+        html = html.replace(/^- (.+)$/gm, '<li>$1</li>');
+        html = html.replace(/^\* (.+)$/gm, '<li>$1</li>');
+        html = html.replace(/(<li>.*<\/li>\n?)+/g, '<ul>$&</ul>');
+        html = html.replace(/^\d+\. (.+)$/gm, '<li>$1</li>');
+        html = html.replace(/^---$/gm, '<hr>');
+        html = html.replace(/\n\n/g, '</p><p>');
+        html = '<p>' + html + '</p>';
+        html = html.replace(/<p><\/p>/g, '');
+        html = html.replace(/<p>(<h[1-3]>)/g, '$1');
+        html = html.replace(/(<\/h[1-3]>)<\/p>/g, '$1');
+        html = html.replace(/<p>(<ul>)/g, '$1');
+        html = html.replace(/(<\/ul>)<\/p>/g, '$1');
+        html = html.replace(/<p>(<blockquote>)/g, '$1');
+        html = html.replace(/(<\/blockquote>)<\/p>/g, '$1');
+        html = html.replace(/<p>(<hr>)/g, '$1');
+        html = html.replace(/<p>(<pre>)/g, '$1');
+        html = html.replace(/(<\/pre>)<\/p>/g, '$1');
+        return html;
+      }
+
+      renderPage();
     }
 
     function renderStockNews(root, payload) {
@@ -1851,12 +2596,12 @@
                   <div class="sn-stat"><div class="k">新闻数</div><div class="v">${totalArticles}</div></div>
                 </div>
                 <div style="max-height:300px;overflow-y:auto;">
-                  ${stockCodes.map(code => `
+                  ${stockCodes.length > 0 ? stockCodes.map(code => `
                     <div class="sn-stock-item" data-code="${escapeHtml(code)}" style="padding:8px 10px;cursor:pointer;border-radius:8px;font-size:13px;${code === currentStockCode ? 'background:#f0f7f4;font-weight:600;' : ''}">
                       ${escapeHtml(code)}${stockNameMap[code] ? ' ' + escapeHtml(stockNameMap[code]) : ''}
                       <span style="float:right;color:var(--muted);">${(stockNews[code] || []).length}条</span>
                     </div>
-                  `).join('')}
+                  `).join('') : '<div style="padding:12px;color:var(--muted);font-size:13px;text-align:center;">暂无数据，请先采集新闻或使用AI搜索</div>'}
                 </div>
               </div>
             </div>
@@ -2283,14 +3028,9 @@ ${newsSummary}`
 
     /* ==================== AI 分析 ==================== */
     function renderAIAnalysis(root, payload) {
-      if (!payload || !payload.stock_codes || payload.stock_codes.length === 0) {
-        root.innerHTML = '<div class="empty">暂无可分析的股票数据，请先同步龙虎榜或新闻。</div>';
-        return;
-      }
-
-      const stockCodes = payload.stock_codes;
+      const stockCodes = payload.stock_codes || [];
       const stockContexts = payload.stock_contexts || {};
-      const stockNames = payload.stock_names || {};
+      const stockNames = { ...state.stockNames, ...(payload.stock_names || {}) };
 
       // 从上下文中补充股票名称
       Object.entries(stockContexts).forEach(([code, ctx]) => {
@@ -2384,13 +3124,10 @@ ${newsSummary}`
             </div>
             <div class="ai-card">
               <h4>选择股票</h4>
-              <select id="ai-stock-select" class="ai-stock-select">
-                <option value="">-- 请选择 --</option>
-                ${stockCodes.map(c => {
-                  const name = stockNames[c] || '';
-                  return `<option value="${escapeHtml(c)}">${escapeHtml(c)}${name ? ' - ' + escapeHtml(name) : ''}</option>`;
-                }).join('')}
-              </select>
+              <input id="ai-stock-input" class="ai-stock-select" list="ai-stock-list" placeholder="输入代码或名称搜索" autocomplete="off">
+              <datalist id="ai-stock-list">
+                ${Object.entries(stockNames).slice(0, 1000).map(([code, name]) => `<option value="${escapeHtml(code)}">${escapeHtml(name)}</option>`).join('')}
+              </datalist>
             </div>
             <div class="ai-card ai-prompt-card">
               <h4>分析提示词</h4>
@@ -2419,14 +3156,28 @@ ${newsSummary}`
       });
 
       // 股票选择变化时显示上下文
-      const stockSelect = document.getElementById('ai-stock-select');
-      stockSelect.addEventListener('change', () => {
-        const code = stockSelect.value;
-        const ctxArea = document.getElementById('ai-context-area');
-        if (!code) { ctxArea.innerHTML = ''; return; }
-        const ctx = stockContexts[code];
-        if (!ctx) { ctxArea.innerHTML = '<div class="empty">未找到该股票的上下文数据</div>'; return; }
-        renderContext(ctxArea, ctx);
+      const stockInput = document.getElementById('ai-stock-input');
+      
+      // 从输入中提取股票代码
+      function extractStockCode(input) {
+        input = input.trim();
+        const match = input.match(/^(\d{6})/);
+        if (match) return match[1];
+        const nameMatch = Object.entries(stockNames).find(([code, name]) => 
+          input.includes(name) || input === code
+        );
+        if (nameMatch) return nameMatch[0];
+        return null;
+      }
+      
+      stockInput.addEventListener('change', () => {
+        const code = extractStockCode(stockInput.value);
+        if (code) {
+          stockInput.value = `${code} ${stockNames[code] || ''}`;
+          const ctxArea = document.getElementById('ai-context-area');
+          const ctx = stockContexts[code];
+          if (ctx) renderContext(ctxArea, ctx);
+        }
       });
 
       function renderContext(area, ctx) {
@@ -2517,18 +3268,18 @@ ${newsSummary}`
           analyzeBtn.classList.add('ai-btn-loading');
           analyzeBtn.textContent = '分析中...';
           stopBtn.style.display = 'inline-block';
-          stockSelect.disabled = true;
+          stockInput.disabled = true;
         } else {
           analyzeBtn.disabled = false;
           analyzeBtn.classList.remove('ai-btn-loading');
           analyzeBtn.textContent = '开始分析';
           stopBtn.style.display = 'none';
-          stockSelect.disabled = false;
+          stockInput.disabled = false;
         }
       }
 
       analyzeBtn.addEventListener('click', async () => {
-        const code = stockSelect.value;
+        const code = extractStockCode(stockInput.value);
         if (!code) { alert('请先选择一只股票'); return; }
 
         const baseUrl = (document.getElementById('ai-baseurl').value || localStorage.getItem('ai_base_url') || '').replace(/\/+$/, '');

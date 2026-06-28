@@ -279,8 +279,18 @@ class UnifiedFrontendService:
     def _build_stock_news_data(self) -> dict:
         """构建个股新闻数据，供前端展示。"""
         stock_codes = self.news_repository.list_stock_codes_with_news()
+
+        # 即使没有数据也返回有效结构，让前端可以展示采集和AI分析功能
         if not stock_codes:
-            return self._missing("暂无个股新闻数据，请先运行新闻同步")
+            return {
+                "available": True,
+                "path": "./data/stock_news.json",
+                "message": "",
+                "stock_codes": [],
+                "stock_summaries": [],
+                "stock_news": {},
+                "total_articles": 0,
+            }
 
         # 获取所有新闻
         all_news = self.news_repository.query_all_news(limit=500)
@@ -820,8 +830,16 @@ class UnifiedFrontendService:
                 seen.add(code)
                 stock_codes.append(code)
 
+        # 即使没有数据也返回有效结构，让前端可以展示AI分析功能
         if not stock_codes:
-            return self._missing("暂无可分析的股票数据，请先同步龙虎榜或新闻")
+            return {
+                "available": True,
+                "path": "./data/ai_analysis.json",
+                "message": "",
+                "stock_codes": [],
+                "stock_names": {},
+                "stock_contexts": {},
+            }
 
         # 预加载龙虎榜数据集（避免重复加载）
         dragon_dataset = self.dragon_tiger_repository.export_query_dataset() if dates else {}

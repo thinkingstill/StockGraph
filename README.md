@@ -74,6 +74,13 @@ StockGraph/
   - 支持配置兼容 OpenAI 的 API（Base URL / API Key / 模型名称），配置保存到 localStorage
   - 选择股票后自动组装新闻 + 龙虎榜上下文，调用大模型进行流式分析
   - 后端 `_build_ai_analysis_data` 合并新闻和龙虎榜两个来源的股票，构建完整分析上下文
+- **智能分析页面已实现**：
+  - 合并原「个股新闻」和「AI 分析」为「智能分析」tab
+  - 新增「分析配置」tab，支持配置多个后端服务和大模型
+  - 支持服务端采集（调用后端API）和AI采集（调用大模型搜索数据）
+  - 可选择不同模型进行分析，支持自定义提示词
+  - 数据展示区域显示股票行情、新闻、龙虎榜等离线数据
+  - AI分析区域支持流式输出，渲染/原文切换
 - 图分析链路已打通框架：
   - 已能从现有龙虎榜数据构建 `seat-stock`、`seat-seat`、`stock-stock` 图快照
   - 已有 `build_graph_snapshots` 入口并支持写入数据库
@@ -113,7 +120,7 @@ StockGraph/
 
 - 数据采集完整度：龙虎榜、全市场行情、雪球热度、akshare 个股新闻/财联社快讯已可用；东方财富资讯、RSS 等多源新闻仍是占位或待增强。
 - 数据存储完整度：SQLite schema 覆盖龙虎榜、新闻实体、图节点边、市场概览；图谱快照和统一前端 JSON 已能落盘。
-- 可视化完整度：统一前端已有龙虎榜查询、龙虎榜关系网、市场热度、全 A 图谱、城市气泡图、行业日历、行业强弱、个股新闻、AI 分析 9 个模块。
+- 可视化完整度：统一前端已有龙虎榜查询、龙虎榜关系网、市场热度、全 A 图谱、城市气泡图、行业日历、行业强弱、智能分析、分析配置 9 个模块。
 - 图谱完整度：已有龙虎榜小图和全 A 多类型大图；社区发现、路径分析、主题簇和图摘要仍需继续实现。
 - AI 分析完整度：前端直调 OpenAI 兼容 API 已可用；后端服务化、结构化提示词契约和图谱摘要接入仍待扩展。
 
@@ -293,8 +300,8 @@ BUILD_YEARLY_MARKET=1 MARKET_OVERVIEW_YEAR=2026 bash run_full_sync.sh
 - **城市气泡图**（ECharts 中国地图，按交易日展示 A 股上市公司城市气泡；大小关联市值，红/绿深浅关联涨跌幅，支持省份、城市、行业、市值和定位质量筛选）
 - 行业日历
 - 行业强弱
-- **个股新闻**（基于 akshare 采集的东方财富个股新闻，支持股票卡片浏览、情绪筛选、新闻时间线详情）
-- **🤖 AI 分析**（配置兼容 OpenAI 的 API，选择股票后自动组装上下文进行流式分析）
+- **智能分析**（合并原个股新闻和AI分析，支持服务端采集和AI采集，可选择不同模型进行分析，支持自定义提示词）
+- **分析配置**（配置后端服务地址、大模型API、采集提示词和分析提示词，支持多模型管理）
 
 城市气泡图说明：
 
@@ -329,6 +336,11 @@ BUILD_YEARLY_MARKET=1 MARKET_OVERVIEW_YEAR=2026 bash run_full_sync.sh
   - `outputs/app/data/market_industry.json`
   - `outputs/app/data/stock_news.json`
   - `outputs/app/data/ai_analysis.json`
+- 配置存储（浏览器 localStorage）:
+  - `sn_backend_services` - 后端服务列表
+  - `sn_llm_models` - 大模型配置列表
+  - `sn_collect_prompt` - AI采集提示词
+  - `sn_analyze_prompt` - 分析提示词
 
 设计原则：
 
