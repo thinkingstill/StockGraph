@@ -2,6 +2,76 @@
 
 `StockGraph` 是一个面向 A 股市场数据分析的可扩展工程骨架，当前已将 `source/` 中已有的龙虎榜抓取、SQLite 存储、查询页面生成、关系图页面生成能力拆分进稳定的分层结构中，并为后续新闻资讯接入、图关系分析与挖掘、大模型分析预留模块边界。
 
+## 给后续大模型的快速导览
+
+如果你只读一个文件，先读本文档；如果要改代码，优先按下面路径建立上下文。
+
+### 主入口和分层
+
+- `scripts/*.py` 是根目录可直接执行的入口，通常只是把 `src/` 加进 `sys.path` 后调用 `stockgraph.cli.*`。
+- `src/stockgraph/cli/` 是 `python -m stockgraph.cli.*` 入口。
+- `src/stockgraph/application/services/` 负责编排业务流程，例如同步数据、生成图快照、生成统一前端。
+- `src/stockgraph/infrastructure/` 放外部依赖实现，包括 akshare/HTTP 数据源和 SQLite 仓储。
+- `src/stockgraph/domain/` 放领域模型、规则、图模型、标签识别，原则上不依赖数据库、网络或 HTML。
+- `src/stockgraph/presentation/templates/unified_app.py` 是统一前端 `outputs/app/index.html` 的主模板。多数 UI 改动都在这个文件内完成。
+
+### 统一前端生成链路
+
+1. 运行 `python3 scripts/build_unified_app.py`。
+2. `stockgraph.cli.build_unified_app` 调用 `UnifiedFrontendService().generate()`。
+3. `src/stockgraph/application/services/unified_frontend.py` 从 SQLite、`data/market_overview/*.json`、`data/reference/*` 汇总各模块 JSON，并写入 `outputs/app/data/`。
+4. `render_unified_app()` 生成 `outputs/app/index.html`。
+5. 浏览器打开 `outputs/app/index.html`，页面先读 `outputs/app/data/app_manifest.json`，再按 tab 懒加载对应模块 JSON。
+
+不要手改 `outputs/app/index.html` 作为源代码；应改 `src/stockgraph/presentation/templates/unified_app.py`，再运行 `python3 scripts/build_unified_app.py` 生成产物。`outputs/app/data/*.json` 是运行时数据产物，构建时可能只因生成时间或重新序列化产生巨大 diff，通常不要提交。
+
+### 统一前端模块映射
+
+| 页面模块 | 前端渲染函数 | 数据构建函数 | 数据文件 |
+|---|---|---|---|
+| 龙虎榜 / 明细查询 | `renderDragonQuery` | `_build_dragon_query_data` | `dragon_tiger_query.json` |
+| 龙虎榜 / 关系网络 | `renderDragonGraph` | `_build_dragon_graph_data` | `dragon_tiger_graph.json` |
+| 市场热度 / 3D 热度 | `renderMarketHot` | `_build_market_hot_data` | `market_hot.json` |
+| 市场热度 / 全 A 图谱 | `renderStockSuperGraph` | `_build_stock_super_graph_data` | `stock_super_graph.json` |
+| 市场热度 / 城市气泡 | `renderChinaCityBubble` | `_build_china_city_bubble_data` | `china_city_bubble.json` |
+| 行业观察 / 行业日历 | `renderMarketCalendar` | `_build_market_calendar_data` | `market_calendar.json` |
+| 行业观察 / 强弱排行 | `renderMarketIndustry` | `_build_market_industry_data` | `market_industry.json` |
+| 个股研判 / 智能分析 | `renderSmartAnalysis` | `_build_stock_news_data` + `_build_ai_analysis_data` | `stock_news.json` + `ai_analysis.json` |
+| 个股研判 / 分析配置 | `renderAnalysisConfig` | 无后端数据，读写 `localStorage` | 无 |
+
+### 股票选择控件约定
+
+所有股票相关输入应支持“输入筛选 + 下拉候选 + 代码解析”。统一工具函数在 `unified_app.py` 顶部：
+
+- `buildStockOptions(...)`：从全局股票名、模块数据、新闻或图谱上下文构建 `{code, name}` 候选。
+- `stockOptionsDatalist(options)`：生成 `<datalist>` 选项，显示格式统一为 `代码 名称`。
+- `resolveStockOption(value, options)`：把用户输入或下拉值解析回股票代码，避免把 `000001 平安银行` 当成普通关键词后查不到。
+
+当前已接入这些股票控件：`dq-stock`、`dg-keyword`、`mh-keyword`、`sg-stock-search`、`sa-stock-select`、`sn-stock-input`、`ai-stock-input`。后续新增股票控件时优先复用上面的工具，不要单独写一套解析逻辑。
+
+### 主要数据来源和存储
+
+- SQLite 位于 `data/shared_state/`，schema 在 `src/stockgraph/infrastructure/db/schema.py`。核心表包括 `stock_seat_operations`、`daily_summaries`、`seat_details`、`news_articles`、`news_entities`、`graph_nodes`、`graph_edges`、`market_daily_snapshots`、`market_hot_rankings`。
+- 市场概览运行数据在 `data/market_overview/stock_daily_*.json` 和 `data/market_overview/hot_daily_*.json`。
+- 参考数据在 `data/reference/`，包括 `all_stock_codes.json`、`stock_basic_info.pkl`、`stock_location_mapping.json`、`industry_mapping.json`。
+- `source/` 是迁移前参考实现归档，不是当前主流程入口；新功能应写入 `src/stockgraph/`。
+
+### 常用验证命令
+
+```bash
+python3 -m py_compile src/stockgraph/presentation/templates/unified_app.py
+python3 scripts/build_unified_app.py
+python3 - <<'PY'
+from pathlib import Path
+import re
+html = Path('outputs/app/index.html').read_text(encoding='utf-8')
+Path('/tmp/stockgraph-inline.js').write_text('\n'.join(re.findall(r'<script>([\s\S]*?)</script>', html)), encoding='utf-8')
+PY
+node --check /tmp/stockgraph-inline.js
+```
+
+如果运行 `build_unified_app.py` 后看到 `outputs/app/data/*.json` 只有生成时间或序列化差异，通常应恢复这些无关数据产物，只保留源码和必要 HTML 产物变更。
+
 ## 目录结构
 
 ```text

@@ -36,6 +36,24 @@
   - 在 `domain/llm` 中定义分析任务协议
   - 在 `application/services` 增加组合型分析服务，消费新闻、龙虎榜、图谱结果
 
+## 当前运行时数据流
+
+统一前端是当前最主要的用户入口，数据流如下：
+
+1. 采集脚本把龙虎榜、新闻、市场概览写入 SQLite 或 `data/market_overview/*.json`。
+2. `UnifiedFrontendService.generate()` 初始化数据库、构建全局股票名称映射，并为每个页面模块生成独立 JSON。
+3. `outputs/app/data/app_manifest.json` 记录生成时间、全局 `stock_names`、各模块 JSON 路径和可用状态。
+4. `outputs/app/index.html` 是静态单页应用，首次加载 manifest，切换 tab 时再加载对应 JSON。
+5. 前端中的 AI/智能分析配置存放在浏览器 `localStorage`，当前不是后端持久化配置。
+
+## 统一前端维护约定
+
+- 源模板是 `src/stockgraph/presentation/templates/unified_app.py`，生成物是 `outputs/app/index.html`。
+- 数据构建逻辑在 `src/stockgraph/application/services/unified_frontend.py`；如果页面缺字段，先改这里生成 JSON，再改模板渲染。
+- 股票输入控件统一使用 `buildStockOptions`、`stockOptionsDatalist`、`resolveStockOption` 这组前端工具。新增股票筛选时要支持输入筛选和下拉候选。
+- 全 A 图谱使用自定义多选下拉，其他单选/关键词类股票控件使用 `<input list=...>` + `<datalist>`。
+- `outputs/app/data/*.json` 是运行数据产物，构建可能刷新时间戳或排序；除非明确要提交演示数据，否则不要把无关 diff 混入功能提交。
+
 ## 当前技术决策
 
 - 数据主存储继续使用 SQLite，适合单机分析与快速迭代。

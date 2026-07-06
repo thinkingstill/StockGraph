@@ -254,21 +254,42 @@ class UnifiedFrontendService:
             records = self._read_json_list(path)
             if not records:
                 continue
-            aggregate: dict[str, float] = {}
+            aggregate: dict[str, dict] = {}
             for row in records:
                 industry = str(row.get("行业", "未知"))
                 if industry == "未知":
                     continue
-                aggregate[industry] = aggregate.get(industry, 0.0) + float(row.get("涨跌幅", 0) or 0)
+                change_pct = float(row.get("涨跌幅", 0) or 0)
+                code = self._normalize_stock_code(row.get("股票代码") or row.get("代码"))
+                name = str(row.get("股票简称") or row.get("名称") or row.get("股票名称") or "").strip()
+                item = aggregate.setdefault(
+                    industry,
+                    {
+                        "total_change_pct": 0.0,
+                        "top_stock_code": "",
+                        "top_stock_name": "",
+                        "top_stock_change_pct": None,
+                    },
+                )
+                item["total_change_pct"] += change_pct
+                if item["top_stock_change_pct"] is None or change_pct > item["top_stock_change_pct"]:
+                    item["top_stock_code"] = code
+                    item["top_stock_name"] = name
+                    item["top_stock_change_pct"] = change_pct
             if not aggregate:
                 continue
-            sorted_items = sorted(aggregate.items(), key=lambda item: item[1], reverse=True)
+            sorted_items = sorted(aggregate.items(), key=lambda item: item[1]["total_change_pct"], reverse=True)
+            top_industry, top_info = sorted_items[0]
+            bottom_industry, bottom_info = sorted_items[-1]
             years.setdefault(trade_date[:4], []).append({
                 "date": f"{trade_date[:4]}-{trade_date[4:6]}-{trade_date[6:8]}",
-                "top_industry": sorted_items[0][0],
-                "top_change_pct": round(sorted_items[0][1], 4),
-                "bottom_industry": sorted_items[-1][0],
-                "bottom_change_pct": round(sorted_items[-1][1], 4),
+                "top_industry": top_industry,
+                "top_change_pct": round(top_info["total_change_pct"], 4),
+                "top_stock_code": top_info["top_stock_code"],
+                "top_stock_name": top_info["top_stock_name"],
+                "top_stock_change_pct": round(float(top_info["top_stock_change_pct"] or 0), 4),
+                "bottom_industry": bottom_industry,
+                "bottom_change_pct": round(bottom_info["total_change_pct"], 4),
             })
         if not years:
             return self._missing("行业日历数据为空")

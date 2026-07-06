@@ -290,6 +290,52 @@ def render_unified_app() -> str:
       const name = state.stockNames[code];
       return name ? `${code} ${name}` : code;
     }
+    function addStockOptionToMap(map, code, name) {
+      if (!code) return;
+      const normalizedCode = String(code).trim();
+      if (!normalizedCode) return;
+      const normalizedName = String(name || state.stockNames[normalizedCode] || '').trim();
+      const existing = map.get(normalizedCode);
+      if (!existing || (!existing.name && normalizedName)) {
+        map.set(normalizedCode, { code: normalizedCode, name: normalizedName });
+      }
+    }
+    function buildStockOptions(...sources) {
+      const map = new Map();
+      sources.forEach(source => {
+        if (!source) return;
+        if (Array.isArray(source)) {
+          source.forEach(item => {
+            if (typeof item === 'string') addStockOptionToMap(map, item);
+            else if (item) addStockOptionToMap(map, item.code || item.stock_code || item.stockCode || item.stock, item.name || item.stock_name || item.stockName);
+          });
+          return;
+        }
+        Object.entries(source).forEach(([code, name]) => addStockOptionToMap(map, code, name));
+      });
+      return Array.from(map.values()).sort((a, b) => a.code.localeCompare(b.code, 'zh-CN'));
+    }
+    function stockOptionText(stock) {
+      return stock.name ? `${stock.code} ${stock.name}` : stock.code;
+    }
+    function stockOptionsDatalist(options) {
+      return options.map(stock => `<option value="${escapeHtml(stockOptionText(stock))}"></option>`).join('');
+    }
+    function resolveStockOption(value, options) {
+      const query = String(value || '').trim();
+      if (!query) return '';
+      const lower = query.toLowerCase();
+      const leadingCode = query.match(/^[A-Za-z0-9.]+/)?.[0] || '';
+      if (leadingCode && options.some(s => s.code === leadingCode)) return leadingCode;
+      const exact = options.find(s =>
+        s.code.toLowerCase() === lower ||
+        s.name === query ||
+        stockOptionText(s).toLowerCase() === lower
+      );
+      if (exact) return exact.code;
+      const fuzzy = options.find(s => s.code.toLowerCase().includes(lower) || s.name.includes(query));
+      return fuzzy?.code || '';
+    }
     async function fetchJson(path) {
       const res = await fetch(path, { cache: 'no-store' });
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
@@ -416,6 +462,8 @@ def render_unified_app() -> str:
       const dates = payload.date_list || [];
       const defaultStart = payload.latest_date || dates[0] || '';
       const defaultEnd = defaultStart;
+      const allData = payload.all_operations || {};
+      const stockOptions = buildStockOptions(flattenByDate(allData, dates), state.stockNames);
       root.innerHTML = `
         <div class="stats">
           <div class="stat"><div class="k">日期区间</div><div class="v" id="dq-date">-</div></div>
@@ -425,7 +473,8 @@ def render_unified_app() -> str:
         </div>
         <div class="filters">
           ${dateRangeControls('dq', dates, defaultStart, defaultEnd)}
-          <input id="dq-stock" placeholder="股票代码或名称">
+          <input id="dq-stock" list="dq-stock-list" placeholder="股票代码或名称" autocomplete="off">
+          <datalist id="dq-stock-list">${stockOptionsDatalist(stockOptions)}</datalist>
           <input id="dq-seat" placeholder="席位或外号">
           <button class="primary" id="dq-search">查询</button>
           <button id="dq-clear">清空</button>
@@ -435,8 +484,6 @@ def render_unified_app() -> str:
           <div class="card split-2"><div class="muted" style="margin-bottom:10px;">活跃席位</div><table><thead><tr><th>席位</th><th>类型</th><th>次数</th><th>净额(万元/亿元)</th></tr></thead><tbody id="dq-seats"></tbody></table></div>
           <div class="card"><div class="muted" style="margin-bottom:10px;">查询结果</div><table><thead><tr><th>股票</th><th>席位</th><th>方向</th><th>金额(万元/亿元)</th></tr></thead><tbody id="dq-results"></tbody></table></div>
         </div>`;
-
-      const allData = payload.all_operations || {};
 
       function aggregateStocks(ops) {
         const grouped = new Map();
@@ -464,10 +511,12 @@ def render_unified_app() -> str:
 
       function draw() {
         const range = selectedDateRange('dq', dates);
-        const stockKw = document.getElementById('dq-stock').value.trim().toLowerCase();
+        const stockInput = document.getElementById('dq-stock').value.trim();
+        const stockKw = stockInput.toLowerCase();
+        const stockCode = resolveStockOption(stockInput, stockOptions);
         const seatKw = document.getElementById('dq-seat').value.trim().toLowerCase();
         const ops = flattenByDate(allData, range).filter(item => {
-          const stockPass = !stockKw || item.stockCode.toLowerCase().includes(stockKw) || item.stockName.toLowerCase().includes(stockKw);
+          const stockPass = !stockKw || (stockCode ? item.stockCode === stockCode : item.stockCode.toLowerCase().includes(stockKw) || item.stockName.toLowerCase().includes(stockKw));
           const seatPass = !seatKw || item.seatName.toLowerCase().includes(seatKw) || String(item.alias || '').toLowerCase().includes(seatKw);
           return stockPass && seatPass;
         });
@@ -497,10 +546,12 @@ def render_unified_app() -> str:
       const dates = Array.from(new Set(all.map(x => x.date).filter(Boolean))).sort().reverse();
       const defaultStart = dates[0] || '';
       const defaultEnd = defaultStart;
+      const stockOptions = buildStockOptions(all, state.stockNames);
       root.innerHTML = `
         <div class="filters">
           ${dateRangeControls('dg', dates, defaultStart, defaultEnd)}
-          <input id="dg-keyword" placeholder="股票、席位、类型关键词">
+          <input id="dg-keyword" list="dg-stock-list" placeholder="股票、席位、类型关键词" autocomplete="off">
+          <datalist id="dg-stock-list">${stockOptionsDatalist(stockOptions)}</datalist>
           <button class="primary" id="dg-run">查询</button>
           <button id="dg-reset">重置</button>
         </div>
@@ -514,8 +565,10 @@ def render_unified_app() -> str:
       const chart = echarts.init(document.getElementById('dg-chart'));
       function draw() {
         const range = new Set(selectedDateRange('dg', dates));
-        const kw = document.getElementById('dg-keyword').value.trim().toLowerCase();
-        const data = all.filter(x => range.has(x.date) && (!kw || x.stock_code.toLowerCase().includes(kw) || x.stock_name.toLowerCase().includes(kw) || x.seat_name.toLowerCase().includes(kw) || String(x.seat_type || '').toLowerCase().includes(kw) || String(x.trader_alias || '').toLowerCase().includes(kw)));
+        const keywordInput = document.getElementById('dg-keyword').value.trim();
+        const kw = keywordInput.toLowerCase();
+        const stockCode = resolveStockOption(keywordInput, stockOptions);
+        const data = all.filter(x => range.has(x.date) && (!kw || (stockCode ? x.stock_code === stockCode : x.stock_code.toLowerCase().includes(kw) || x.stock_name.toLowerCase().includes(kw) || x.seat_name.toLowerCase().includes(kw) || String(x.seat_type || '').toLowerCase().includes(kw) || String(x.trader_alias || '').toLowerCase().includes(kw))));
         const seatMap = new Map();
         const stockMap = new Map();
         data.forEach(r => {
@@ -586,6 +639,7 @@ def render_unified_app() -> str:
       const defaultY = fieldEntries.find(([k]) => k === 'tweet_rank')?.[0] || fieldEntries[1]?.[0] || fieldEntries[0][0];
       const defaultZ = fieldEntries.find(([k]) => k === 'change_pct')?.[0] || fieldEntries[2]?.[0] || fieldEntries[0][0];
       const defaultSize = fieldEntries.find(([k]) => k === 'deal_rank')?.[0] || fieldEntries[3]?.[0] || fieldEntries[0][0];
+      const stockOptions = buildStockOptions(flattenByDate(recordsByDate, dates), payload.records || [], state.stockNames);
       root.innerHTML = `
         <div class="stats">
           <div class="stat"><div class="k">日期区间</div><div class="v" id="mh-date-v">-</div></div>
@@ -601,7 +655,8 @@ def render_unified_app() -> str:
           <select id="mh-size">${fieldEntries.map(([k,v]) => `<option value="${k}" ${k===defaultSize?'selected':''}>大小: ${v}</option>`).join('')}</select>
           <select id="mh-exchange"><option value="">全部交易所</option></select>
           <select id="mh-industry"><option value="">全部行业</option></select>
-          <input id="mh-keyword" placeholder="股票代码/名称/行业关键词">
+          <input id="mh-keyword" list="mh-stock-list" placeholder="股票代码/名称/行业关键词" autocomplete="off">
+          <datalist id="mh-stock-list">${stockOptionsDatalist(stockOptions)}</datalist>
           <button class="primary" id="mh-run">刷新</button>
           <button id="mh-reset">重置</button>
         </div>
@@ -628,11 +683,13 @@ def render_unified_app() -> str:
         const sizeField = document.getElementById('mh-size').value;
         const exchange = document.getElementById('mh-exchange').value;
         const industry = document.getElementById('mh-industry').value;
-        const keyword = document.getElementById('mh-keyword').value.trim().toLowerCase();
+        const keywordInput = document.getElementById('mh-keyword').value.trim();
+        const keyword = keywordInput.toLowerCase();
+        const stockCode = resolveStockOption(keywordInput, stockOptions);
         const filtered = records.filter(x => {
           const matchExchange = !exchange || x.exchange === exchange;
           const matchIndustry = !industry || x.industry === industry;
-          const matchKeyword = !keyword || x.stock_code.toLowerCase().includes(keyword) || x.stock_name.toLowerCase().includes(keyword) || x.industry.toLowerCase().includes(keyword);
+          const matchKeyword = !keyword || (stockCode ? x.stock_code === stockCode : x.stock_code.toLowerCase().includes(keyword) || x.stock_name.toLowerCase().includes(keyword) || x.industry.toLowerCase().includes(keyword));
           return matchExchange && matchIndustry && matchKeyword;
         });
         document.getElementById('mh-date-v').textContent = dateRangeLabel(range);
@@ -1573,6 +1630,7 @@ def render_unified_app() -> str:
           .cal-head,.cal-day{font-size:12px;text-align:center;}
           .cal-head{color:var(--muted);padding:4px 0;}
           .cal-day{border-radius:10px;padding:8px 4px;min-height:56px;border:1px solid #edf0e8;display:flex;flex-direction:column;justify-content:space-between;}
+          .cal-day:not(.empty){cursor:help;}
           .cal-day.empty{background:#fafbf8;border-style:dashed;color:#b8c0b4;}
           .cal-day .d{font-weight:700;font-size:12px;}
           .cal-day .l{font-size:10px;line-height:1.15;word-break:break-all;}
@@ -1608,7 +1666,13 @@ def render_unified_app() -> str:
             continue;
           }
           const bg = colorMap[item.top_industry] || '#f3f4f6';
-          items.push(`<div class="cal-day" style="background:${bg};"><div class="d">${day}</div><div class="l">${escapeHtml(item.top_industry)}</div></div>`);
+          const stockLabel = item.top_stock_code
+            ? `${item.top_stock_name || '-'} (${item.top_stock_code}) ${Number(item.top_stock_change_pct || 0).toFixed(2)}%`
+            : '暂无股票明细';
+          const tooltip = `${item.date}
+最强行业: ${item.top_industry} ${Number(item.top_change_pct || 0).toFixed(2)}%
+行业涨幅最大股票: ${stockLabel}`;
+          items.push(`<div class="cal-day" style="background:${bg};" title="${escapeHtml(tooltip)}"><div class="d">${day}</div><div class="l">${escapeHtml(item.top_industry)}</div></div>`);
         }
         return `<div class="cal-card"><div class="cal-title">${year}年${month}月</div><div class="cal-grid">${weekNames.map(x => `<div class="cal-head">${x}</div>`).join('')}${items.join('')}</div></div>`;
       }
@@ -1929,6 +1993,7 @@ def render_unified_app() -> str:
           }
         }
       });
+      const stockOptions = buildStockOptions(stockNameMap, stockCodes, aiPayload.stock_codes || [], Object.keys(stockNews), Object.keys(stockContexts));
 
       // 读取配置
       const services = JSON.parse(localStorage.getItem('sn_backend_services') || '[{"name":"本地服务","url":"http://localhost:8030/api","default":true}]');
@@ -1948,9 +2013,11 @@ def render_unified_app() -> str:
       const styles = `
         <style>
           .sa-layout{display:grid;grid-template-columns:1fr;gap:16px;}
-          .sa-filter{background:var(--card);border:1px solid var(--line);border-radius:16px;padding:16px;display:flex;gap:12px;flex-wrap:wrap;align-items:center;}
-          .sa-filter select,.sa-filter input{padding:10px 12px;font-size:14px;border:1px solid var(--line);border-radius:12px;}
+          .sa-filter{background:var(--card);border:1px solid var(--line);border-radius:16px;padding:16px;display:flex;gap:12px;flex-wrap:wrap;align-items:end;}
+          .sa-control{display:flex;flex-direction:column;gap:4px;}
+          .sa-filter select,.sa-filter input{height:42px;padding:0 12px;font-size:14px;border:1px solid var(--line);border-radius:12px;}
           .sa-filter select{min-width:180px;}
+          .sa-stock-search{width:min(320px,100%);min-width:260px;max-width:100%;}
           .sa-data{background:var(--card);border:1px solid var(--line);border-radius:16px;padding:20px;}
           .sa-data h4{margin:0 0 14px;font-size:15px;color:var(--accent);}
           .sa-data-section{margin-bottom:20px;}
@@ -1966,11 +2033,11 @@ def render_unified_app() -> str:
           .sa-dt-item:last-child{border-bottom:none;}
           .sa-analyze{background:var(--card);border:1px solid var(--line);border-radius:16px;padding:20px;text-align:left;}
           .sa-analyze h4{margin:0 0 14px;font-size:15px;color:var(--accent);}
-          .sa-analyze-controls{display:grid;grid-template-columns:200px 1fr auto;gap:12px;align-items:start;margin-bottom:14px;}
+          .sa-analyze-controls{display:grid;grid-template-columns:200px 1fr auto;gap:12px;align-items:end;margin-bottom:14px;}
           .sa-control-label{font-size:11px;color:var(--muted);margin-bottom:4px;display:block;}
-          .sa-analyze-controls select{width:100%;padding:10px 12px;font-size:13px;border:1px solid var(--line);border-radius:10px;}
-          .sa-analyze-controls textarea{width:100%;min-height:60px;padding:10px 12px;font-size:13px;border:1px solid var(--line);border-radius:10px;resize:vertical;font-family:inherit;}
-          .sa-analyze-controls .sa-btn{align-self:end;height:40px;}
+          .sa-analyze-controls select{width:100%;height:42px;padding:0 12px;font-size:13px;border:1px solid var(--line);border-radius:10px;}
+          .sa-analyze-controls textarea{width:100%;height:42px;min-height:42px;padding:10px 12px;font-size:13px;line-height:20px;border:1px solid var(--line);border-radius:10px;resize:vertical;font-family:inherit;}
+          .sa-analyze-controls .sa-btn{height:42px;white-space:nowrap;}
           .sa-result{min-height:200px;line-height:1.8;font-size:14px;text-align:left;}
           .sa-result.rendered h1,.sa-result.rendered h2,.sa-result.rendered h3{margin:16px 0 8px;font-weight:700;}
           .sa-result.rendered p{margin:8px 0;}
@@ -1983,7 +2050,7 @@ def render_unified_app() -> str:
           .sa-loading-dot:nth-child(2){animation-delay:0.2s;}
           .sa-loading-dot:nth-child(3){animation-delay:0.4s;}
           @keyframes sa-bounce{0%,80%,100%{transform:scale(0.6);opacity:0.4}40%{transform:scale(1);opacity:1}}
-          .sa-btn{padding:10px 18px;font-size:13px;border-radius:10px;cursor:pointer;border:1px solid var(--line);background:#fff;}
+          .sa-btn{height:42px;padding:0 18px;font-size:13px;border-radius:10px;cursor:pointer;border:1px solid var(--line);background:#fff;}
           .sa-btn.primary{background:linear-gradient(135deg,var(--accent),var(--accent-2));color:#fff;border:none;}
           .sa-btn:disabled{opacity:0.6;cursor:not-allowed;}
           .sa-tabs{display:flex;gap:4px;background:#f1f5f9;border-radius:10px;padding:3px;}
@@ -2002,22 +2069,22 @@ def render_unified_app() -> str:
           <h3 style="margin:0 0 16px;">智能分析</h3>
           <div class="sa-layout">
             <div class="sa-filter">
-              <div>
+              <div class="sa-control">
                 <label class="sa-control-label">选择股票</label>
-                <select id="sa-stock-select">
-                  <option value="">-- 请选择 --</option>
-                  ${Object.entries(stockNameMap).slice(0, 2000).map(([code, name]) => `<option value="${escapeHtml(code)}">${escapeHtml(code)} ${escapeHtml(name)}</option>`).join('')}
-                </select>
+                <input id="sa-stock-select" class="sa-stock-search" list="sa-stock-options" placeholder="输入代码或名称搜索" autocomplete="off">
+                <datalist id="sa-stock-options">
+                  ${stockOptionsDatalist(stockOptions)}
+                </datalist>
               </div>
-              <div>
+              <div class="sa-control">
                 <label class="sa-control-label">开始日期</label>
                 <input type="date" id="sa-start-date">
               </div>
-              <div>
+              <div class="sa-control">
                 <label class="sa-control-label">结束日期</label>
                 <input type="date" id="sa-end-date">
               </div>
-              <div style="display:flex;gap:8px;align-self:end;">
+              <div style="display:flex;gap:8px;align-self:end;flex-wrap:wrap;">
                 <button class="sa-btn" id="sa-reset">重置</button>
                 <button class="sa-btn" id="sa-server-collect" ${!defaultService ? 'disabled title="请先在分析配置中配置后端服务"' : ''}>服务端采集</button>
                 <button class="sa-btn primary" id="sa-ai-collect" ${!defaultModel ? 'disabled title="请先在分析配置中配置大模型"' : ''}>AI 采集</button>
@@ -2030,17 +2097,17 @@ def render_unified_app() -> str:
             <div class="sa-analyze" id="sa-analyze-area">
               <div class="sa-section-title">AI 分析</div>
               <div class="sa-analyze-controls">
-                <div>
+                <div class="sa-control">
                   <label class="sa-control-label">选择模型</label>
                   <select id="sa-model-select">
                     ${models.length > 0 ? models.map(m => `<option value="${escapeHtml(m.name)}" ${m.default ? 'selected' : ''}>${escapeHtml(m.name)}</option>`).join('') : '<option value="">请先配置模型</option>'}
                   </select>
                 </div>
-                <div>
+                <div class="sa-control">
                   <label class="sa-control-label">分析提示词（可自定义）</label>
                   <textarea id="sa-analyze-prompt">${escapeHtml(analyzePrompt)}</textarea>
                 </div>
-                <div>
+                <div class="sa-control">
                   <label class="sa-control-label">&nbsp;</label>
                   <button class="sa-btn primary" id="sa-analyze-btn" ${!defaultModel ? 'disabled' : ''}>开始分析</button>
                 </div>
@@ -2069,12 +2136,29 @@ def render_unified_app() -> str:
 
       function bindEvents() {
         // 股票选择
-        document.getElementById('sa-stock-select').addEventListener('change', (e) => {
-          const code = e.target.value;
+        const stockInput = document.getElementById('sa-stock-select');
+        function selectStockFromInput(showAlert = false) {
+          const code = resolveStockOption(stockInput.value, stockOptions);
           if (code) {
             currentStockCode = code;
-            currentStockName = stockNameMap[code] || '';
+            currentStockName = stockNameMap[code] || stockOptions.find(s => s.code === code)?.name || '';
+            stockInput.value = currentStockName ? `${currentStockCode} ${currentStockName}` : currentStockCode;
             loadStockData();
+            return true;
+          }
+          if (!stockInput.value.trim()) {
+            currentStockCode = '';
+            currentStockName = '';
+            return false;
+          }
+          if (showAlert) alert('未找到匹配的股票，请输入代码或名称后从列表中选择');
+          return false;
+        }
+        stockInput.addEventListener('change', () => selectStockFromInput(false));
+        stockInput.addEventListener('keydown', (e) => {
+          if (e.key === 'Enter') {
+            e.preventDefault();
+            selectStockFromInput(true);
           }
         });
 
@@ -2465,6 +2549,8 @@ def render_unified_app() -> str:
         if (s.stock_name) stockNameMap[s.stock_code] = s.stock_name;
       });
 
+      const stockOptions = buildStockOptions(stockNameMap, stockCodes, summaries, Object.keys(stockNews));
+
       // 从 localStorage 读取 LLM 配置
       const savedLlmBaseUrl = localStorage.getItem('sn_llm_base_url') || '';
       const savedLlmKey = localStorage.getItem('sn_llm_key') || '';
@@ -2557,7 +2643,7 @@ def render_unified_app() -> str:
                   <label style="font-size:12px;color:var(--muted);display:block;margin-bottom:4px;">股票代码</label>
                   <input id="sn-stock-input" class="sn-stock-input" list="sn-stock-list" placeholder="输入代码或名称搜索" value="${escapeHtml(currentStockCode)}">
                   <datalist id="sn-stock-list">
-                    ${Object.entries(stockNameMap).map(([code, name]) => `<option value="${escapeHtml(code)} ${escapeHtml(name)}">${escapeHtml(code)} ${escapeHtml(name)}</option>`).join('')}
+                    ${stockOptionsDatalist(stockOptions)}
                   </datalist>
                 </div>
                 <div class="sn-date-row">
@@ -2633,16 +2719,7 @@ def render_unified_app() -> str:
         
         // 从输入中提取股票代码
         function extractStockCode(input) {
-          input = input.trim();
-          // 如果是6位数字开头
-          const match = input.match(/^(\d{6})/);
-          if (match) return match[1];
-          // 按名称搜索
-          const nameMatch = Object.entries(stockNameMap).find(([code, name]) => 
-            input.includes(name) || input === code
-          );
-          if (nameMatch) return nameMatch[0];
-          return null;
+          return resolveStockOption(input, stockOptions) || null;
         }
         
         // 回车搜索
@@ -3037,6 +3114,7 @@ def render_unified_app() -> str:
           }
         }
       });
+      const stockOptions = buildStockOptions(stockNames, stockCodes, Object.keys(stockContexts));
 
       // 从 localStorage 读取配置
       const savedBaseUrl = localStorage.getItem('ai_base_url') || '';
@@ -3122,7 +3200,7 @@ def render_unified_app() -> str:
               <h4>选择股票</h4>
               <input id="ai-stock-input" class="ai-stock-select" list="ai-stock-list" placeholder="输入代码或名称搜索" autocomplete="off">
               <datalist id="ai-stock-list">
-                ${Object.entries(stockNames).slice(0, 1000).map(([code, name]) => `<option value="${escapeHtml(code)}">${escapeHtml(name)}</option>`).join('')}
+                ${stockOptionsDatalist(stockOptions)}
               </datalist>
             </div>
             <div class="ai-card ai-prompt-card">
@@ -3156,14 +3234,7 @@ def render_unified_app() -> str:
       
       // 从输入中提取股票代码
       function extractStockCode(input) {
-        input = input.trim();
-        const match = input.match(/^(\d{6})/);
-        if (match) return match[1];
-        const nameMatch = Object.entries(stockNames).find(([code, name]) => 
-          input.includes(name) || input === code
-        );
-        if (nameMatch) return nameMatch[0];
-        return null;
+        return resolveStockOption(input, stockOptions) || null;
       }
       
       stockInput.addEventListener('change', () => {
