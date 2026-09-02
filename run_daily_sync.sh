@@ -34,6 +34,7 @@ cd "$ROOT_DIR"
 
 TASK_FAILURES=()
 TASK_SUCCESSES=0
+FAIL_ON_TASK_FAILURE="${FAIL_ON_TASK_FAILURE:-0}"
 
 run_task() {
   local name="$1"
@@ -132,6 +133,10 @@ run_task "build_dev_index" "$PYTHON_BIN" scripts/build_dev_index.py || true
 
 if [[ "${#TASK_FAILURES[@]}" -gt 0 ]]; then
   echo "[stockgraph] completed with warnings. failed tasks: ${TASK_FAILURES[*]}" >&2
+  if [[ "$FAIL_ON_TASK_FAILURE" == "1" ]]; then
+    echo "[stockgraph] failing because FAIL_ON_TASK_FAILURE=1" >&2
+    exit 1
+  fi
 else
   echo "[stockgraph] all selected tasks completed successfully"
 fi
