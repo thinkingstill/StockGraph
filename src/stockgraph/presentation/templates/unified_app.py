@@ -1831,6 +1831,7 @@ def render_unified_app() -> str:
             <div>
               <span class="name">${escapeHtml(m.name)}</span>
               ${m.default ? '<span class="tag default">默认</span>' : ''}
+              ${m.enableWebSearch ? '<span class="tag">联网搜索</span>' : ''}
               <div class="url">${escapeHtml(m.baseUrl)} | ${escapeHtml(m.model)}</div>
             </div>
             <div class="actions">
@@ -1878,6 +1879,10 @@ def render_unified_app() -> str:
               <div class="cfg-form-group">
                 <label>模型标识</label>
                 <input id="cfg-model-id" placeholder="deepseek-chat">
+              </div>
+              <div class="cfg-form-group" style="display:flex;gap:8px;align-items:center;">
+                <input id="cfg-model-web-search" type="checkbox" style="width:auto;">
+                <label style="margin:0;">启用联网搜索（适用于已开通该能力的 Grok / 兼容模型）</label>
               </div>
               <div class="cfg-btn-row">
                 <button class="cfg-btn primary" id="cfg-add-model">添加模型</button>
@@ -1935,13 +1940,15 @@ def render_unified_app() -> str:
         const apiKey = document.getElementById('cfg-model-key').value.trim();
         const model = document.getElementById('cfg-model-id').value.trim();
         if (!name || !baseUrl || !apiKey || !model) { alert('请填写所有模型配置项'); return; }
-        savedModels.push({ name, baseUrl, apiKey, model, default: savedModels.length === 0 });
+        const enableWebSearch = document.getElementById('cfg-model-web-search').checked;
+        savedModels.push({ name, baseUrl, apiKey, model, enableWebSearch, default: savedModels.length === 0 });
         localStorage.setItem('sn_llm_models', JSON.stringify(savedModels));
         document.getElementById('cfg-models-list').innerHTML = renderModels();
         document.getElementById('cfg-model-name').value = '';
         document.getElementById('cfg-model-url').value = '';
         document.getElementById('cfg-model-key').value = '';
         document.getElementById('cfg-model-id').value = '';
+        document.getElementById('cfg-model-web-search').checked = false;
       });
 
       // 保存所有配置
@@ -2007,6 +2014,8 @@ def render_unified_app() -> str:
       let currentStockName = '';
       let currentNews = [];
       let currentContext = {};
+      let currentHistory = [];
+      let currentRuleAnalysis = null;
       let isCollecting = false;
       let isAnalyzing = false;
 
@@ -2086,8 +2095,8 @@ def render_unified_app() -> str:
               </div>
               <div style="display:flex;gap:8px;align-self:end;flex-wrap:wrap;">
                 <button class="sa-btn" id="sa-reset">重置</button>
-                <button class="sa-btn" id="sa-server-collect" ${!defaultService ? 'disabled title="请先在分析配置中配置后端服务"' : ''}>服务端采集</button>
-                <button class="sa-btn primary" id="sa-ai-collect" ${!defaultModel ? 'disabled title="请先在分析配置中配置大模型"' : ''}>AI 采集</button>
+                <button class="sa-btn primary" id="sa-server-collect" ${!defaultService ? 'disabled title="请先在分析配置中配置后端服务"' : ''}>刷新结构化数据</button>
+                <button class="sa-btn" id="sa-ai-collect" ${!defaultModel ? 'disabled title="请先在分析配置中配置大模型"' : ''}>Grok 联网检索</button>
               </div>
             </div>
             <div class="sa-data" id="sa-data-area">
@@ -2169,6 +2178,8 @@ def render_unified_app() -> str:
           currentStockName = '';
           currentNews = [];
           currentContext = {};
+          currentHistory = [];
+          currentRuleAnalysis = null;
           document.getElementById('sa-data-area').innerHTML = '<div class="sa-section-title">股票数据</div><div class="sa-empty">请选择股票查看数据</div>';
           document.getElementById('sa-result-content').innerHTML = '<div style="color:var(--muted);">选择股票并采集数据后，点击"开始分析"</div>';
           document.getElementById('sa-result-tabs').style.display = 'none';
@@ -2203,6 +2214,8 @@ def render_unified_app() -> str:
       function loadStockData() {
         currentNews = stockNews[currentStockCode] || [];
         currentContext = stockContexts[currentStockCode] || {};
+        currentHistory = currentContext.history || [];
+        currentRuleAnalysis = currentContext.rule_analysis || null;
         renderDataArea();
       }
 
@@ -2226,8 +2239,24 @@ def render_unified_app() -> str:
           if (endDate && d.date > endDate) return false;
           return true;
         });
-
         let html = `<div class="sa-section-title">股票数据 - ${escapeHtml(displayName)} <span style="font-size:12px;color:var(--muted);font-weight:400;">数据区间: ${escapeHtml(startDate || '-')} ~ ${escapeHtml(endDate || '-')}</span></div>`;
+
+        // 可解释规则研判：数据由结构化采集端点返回，不依赖大模型。
+        if (currentRuleAnalysis && currentRuleAnalysis.available) {
+          const m = currentRuleAnalysis.metrics || {};
+          html += `<div class="sa-data-section"><h5>规则研判 <span class="sa-source-tag server">${escapeHtml(currentRuleAnalysis.level || '中性')} ${escapeHtml(String(currentRuleAnalysis.score || 0))} / 100</span></h5>
+            <div style="font-size:12px;color:var(--muted);margin-bottom:8px;">${escapeHtml(currentRuleAnalysis.method || '')}</div>
+            <div style="display:flex;gap:8px;flex-wrap:wrap;font-size:12px;"><span>收盘 ${escapeHtml(String(m.close ?? '-'))}</span><span>MA5 ${escapeHtml(String(m.ma5 ?? '-'))}</span><span>MA20 ${escapeHtml(String(m.ma20 ?? '-'))}</span><span>RSI ${escapeHtml(String(m.rsi14 ?? '-'))}</span><span>5日 ${m.return_5 == null ? '-' : escapeHtml(String(m.return_5)) + '%'}</span><span>20日 ${m.return_20 == null ? '-' : escapeHtml(String(m.return_20)) + '%'}</span></div>
+            ${(currentRuleAnalysis.evidence || []).map(e => `<div class="sa-dt-item"><strong>${escapeHtml(e.dimension)}</strong>：${escapeHtml(e.signal)} <span style="color:${String(e.impact).startsWith('-') ? 'var(--danger)' : 'var(--success)'}">${escapeHtml(e.impact)}</span></div>`).join('')}
+            ${(currentRuleAnalysis.risks || []).length ? `<div style="margin-top:8px;font-size:12px;color:var(--danger);">风险：${(currentRuleAnalysis.risks || []).map(escapeHtml).join('；')}</div>` : ''}
+            <div style="margin-top:8px;font-size:11px;color:var(--muted);">${escapeHtml(currentRuleAnalysis.disclaimer || '')}</div></div>`;
+        } else {
+          html += '<div class="sa-data-section"><h5>规则研判</h5><div style="color:var(--muted);font-size:13px;">点击“刷新结构化数据”后，将基于日线、新闻和龙虎榜生成可复核的趋势、动量、RSI、量能和资金研判。</div></div>';
+        }
+
+        if (currentHistory.length) {
+          html += `<div class="sa-data-section"><h5>最近日线 (${currentHistory.length} 条)</h5><table class="sa-kline-table"><thead><tr><th>日期</th><th>收盘</th><th>涨跌幅</th><th>成交量</th></tr></thead><tbody>${currentHistory.slice(-10).reverse().map(k => `<tr><td>${escapeHtml(k.date || '')}</td><td>${escapeHtml(String(k.close ?? '-'))}</td><td>${escapeHtml(String(k.change_pct ?? '-'))}%</td><td>${fmtAmount(k.volume || 0)}</td></tr>`).join('')}</tbody></table></div>`;
+        }
 
         // 新闻数据
         html += `<div class="sa-data-section">
@@ -2278,15 +2307,18 @@ def render_unified_app() -> str:
         try {
           const startDate = document.getElementById('sa-start-date').value;
           const endDate = document.getElementById('sa-end-date').value;
-          const resp = await fetch(`${defaultService.url}/news/sync`, {
+          const resp = await fetch(`${defaultService.url}/stock/context`, {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ codes: [currentStockCode], limit: 30 })
+            body: JSON.stringify({ code: currentStockCode, start_date: startDate, end_date: endDate, sync_news: true })
           });
           const result = await resp.json();
           if (result.success) {
-            alert(`采集完成，新增 ${result.result?.inserted || 0} 条新闻`);
-            window.location.reload();
+            currentHistory = result.history || [];
+            currentNews = result.news || currentNews;
+            currentContext = { ...currentContext, dragon_tiger: result.dragon_tiger || currentContext.dragon_tiger || [] };
+            currentRuleAnalysis = result.analysis || null;
+            renderDataArea();
           } else {
             alert('采集失败: ' + (result.error || '未知错误'));
           }
@@ -2295,7 +2327,7 @@ def render_unified_app() -> str:
         } finally {
           isCollecting = false;
           btn.disabled = false;
-          btn.textContent = '服务端采集';
+          btn.textContent = '刷新结构化数据';
         }
       }
 
@@ -2312,15 +2344,15 @@ def render_unified_app() -> str:
         btn.disabled = true;
         btn.textContent = 'AI采集中...';
 
-        // 构建采集提示词
-        const prompt = collectPrompt
-          .replace(/\{stock_code\}/g, currentStockCode)
-          .replace(/\{stock_name\}/g, currentStockName)
-          .replace(/\{start_date\}/g, startDate)
-          .replace(/\{end_date\}/g, endDate);
+        // 让启用了 web_search 的 Grok / 兼容模型检索；结果仅作为外部资料，不混入结构化指标。
+        const prompt = (collectPrompt || '请联网检索 {stock_name}({stock_code}) 在 {start_date} 至 {end_date} 的公司公告、权威财经新闻和行业事件；列出来源链接、日期和不确定性，不得编造。')
+          .replace(/\\{stock_code\\}/g, currentStockCode)
+          .replace(/\\{stock_name\\}/g, currentStockName)
+          .replace(/\\{start_date\\}/g, startDate)
+          .replace(/\\{end_date\\}/g, endDate);
 
         try {
-          const result = await callLLM(defaultModel, prompt, 3000);
+          const result = await callLLM(defaultModel, prompt, 3000, defaultModel.enableWebSearch);
           // 将AI采集结果添加到新闻列表
           const aiNewsItem = {
             title: `AI采集: ${currentStockName || currentStockCode}`,
@@ -2337,7 +2369,7 @@ def render_unified_app() -> str:
         } finally {
           isCollecting = false;
           btn.disabled = false;
-          btn.textContent = 'AI 采集';
+          btn.textContent = 'Grok 联网检索';
         }
       }
 
@@ -2374,6 +2406,11 @@ def render_unified_app() -> str:
           if (endDate && d.date > endDate) return false;
           return true;
         });
+        const klineRows = currentHistory.filter(k => {
+          const date = String(k.date || '');
+          return (!startDate || date >= startDate) && (!endDate || date <= endDate);
+        });
+        const klineText = klineRows.slice(-30).map(k => `${k.date} 开${k.open} 高${k.high} 低${k.low} 收${k.close} 涨跌${k.change_pct}% 成交量${k.volume}`).join('\\n');
 
         let dataContext = '';
         if (filteredNews.length > 0) {
@@ -2392,14 +2429,31 @@ def render_unified_app() -> str:
           });
         }
 
+        const newsText = filteredNews.length > 0
+          ? filteredNews.slice(0, 15).map((n, i) => `${i + 1}. [${n.sentiment || '中性'}] ${n.title} (${n.published_at || ''})`).join('\\n')
+          : '暂无';
+        const dragonText = dt.length > 0
+          ? dt.map(d => {
+              const operations = (d.operations || []).slice(0, 3).map(op =>
+                `${op.direction || ''} ${op.seatName || op.seat_name || ''} ${op.amount != null ? fmtAmount(op.amount) : ''}`
+              ).join(', ');
+              return `${d.date}: ${operations}`;
+            }).join('\\n')
+          : '暂无';
         const fullPrompt = userPrompt
-          .replace(/\{stock_code\}/g, currentStockCode)
-          .replace(/\{stock_name\}/g, currentStockName)
-          .replace(/\{start_date\}/g, startDate)
-          .replace(/\{end_date\}/g, endDate)
-          .replace(/\{news_data\}/g, filteredNews.length > 0 ? filteredNews.slice(0, 15).map((n, i) => `${i+1}. [${n.sentiment || '中性'}] ${n.title} (${n.published_at || ''})`).join('\\n') : '暂无')
-          .replace(/\{dragon_tiger_data\}/g, dt.length > 0 ? dt.map(d => `${d.date}: ${(d.operations || []).slice(0, 3).map(op => `${op.direction} ${op.seatName || op.seat_name} ${op.amount != null ? fmtAmount(op.amount) : ''}`).join(', ')}`).join('\\n') : '暂无')
-          .replace(/\{stock_kline_data\}/g, '暂无');
+          .replace(/\\{stock_code\\}/g, currentStockCode)
+          .replace(/\\{stock_name\\}/g, currentStockName)
+          .replace(/\\{start_date\\}/g, startDate)
+          .replace(/\\{end_date\\}/g, endDate)
+          .replace(/\\{news_data\\}/g, newsText)
+          .replace(/\\{dragon_tiger_data\\}/g, dragonText)
+          .replace(/\\{stock_kline_data\\}/g, klineText || '暂无（请先刷新结构化数据）');
+
+        if (currentRuleAnalysis?.available) {
+          dataContext += `\\n## 已计算的规则研判（请复核，不要直接照抄为投资结论）\\n评分: ${currentRuleAnalysis.score}/100，倾向: ${currentRuleAnalysis.level}\\n`;
+          (currentRuleAnalysis.evidence || []).forEach(e => { dataContext += `- ${e.dimension}: ${e.signal} (${e.impact})\\n`; });
+        }
+        if (klineText) dataContext += '\\n## 日线数据\\n' + klineText;
 
         try {
           currentRawText = '';
@@ -2470,7 +2524,7 @@ def render_unified_app() -> str:
       }
 
       // 调用大模型
-      async function callLLM(model, prompt, maxTokens = 2000) {
+      async function callLLM(model, prompt, maxTokens = 2000, enableWebSearch = false) {
         const apiUrl = model.baseUrl + '/chat/completions';
         const resp = await fetch(apiUrl, {
           method: 'POST',
@@ -2487,6 +2541,7 @@ def render_unified_app() -> str:
             stream: false,
             temperature: 0.7,
             max_tokens: maxTokens,
+            ...(enableWebSearch ? { tools: [{ type: 'web_search' }] } : {}),
           }),
         });
 

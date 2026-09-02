@@ -151,6 +151,9 @@ StockGraph/
   - 可选择不同模型进行分析，支持自定义提示词
   - 数据展示区域显示股票行情、新闻、龙虎榜等离线数据
   - AI分析区域支持流式输出，渲染/原文切换
+  - **结构化数据刷新**：本地 API 一次返回日线、已入库新闻、龙虎榜记录，并同步个股新闻；无需把大模型的自由文本伪装成数据
+  - **可解释规则研判**：用 MA5/10/20/60、5/20 日动量、RSI(14)、5/20 日量比、新闻情绪和龙虎榜净额生成 0–100 评分、证据项和风险提示
+  - **可选 Grok 联网检索**：模型配置可启用 `web_search` 工具（仅适用于账户和模型实际支持该工具的 OpenAI 兼容接口）；检索结果与结构化指标分开展示
 - 图分析链路已打通框架：
   - 已能从现有龙虎榜数据构建 `seat-stock`、`seat-seat`、`stock-stock` 图快照
   - 已有 `build_graph_snapshots` 入口并支持写入数据库
@@ -209,7 +212,10 @@ PYTHONPATH=src python3 -m stockgraph.cli.analyze_dragon_tiger --date 2026-04-17
 PYTHONPATH=src python3 -m stockgraph.cli.analyze_dragon_tiger --start-date 2026-04-01 --end-date 2026-04-17
 PYTHONPATH=src python3 -m stockgraph.cli.sync_market_overview --year 2025
 PYTHONPATH=src python3 -m stockgraph.cli.build_unified_app
+PYTHONPATH=src python3 scripts/api_server.py --port 8030
 ```
+
+在“个股研判 → 智能分析”中选择股票后，点击“刷新结构化数据”即可获得日线与规则研判。若配置了 Grok 或其他支持联网工具的模型，可在“分析配置”中勾选“启用联网搜索”，再使用“Grok 联网检索”；模型输出应被视为待核验的外部资料。
 
 也可以直接用根目录脚本：
 
