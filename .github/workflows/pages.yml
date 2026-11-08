@@ -103,6 +103,17 @@ jobs:
       - name: Byte-compile
         run: python -m compileall -q src scripts
 
+      # 无网络冒烟：把各 SYNC_* 关掉跑一遍编排脚本，验证接线没断
+      - name: Offline pipeline smoke
+        env:
+          PYTHON_BIN: python
+          SYNC_DRAGON_TIGER: '0'
+          SYNC_MARKET_OVERVIEW: '0'
+          SYNC_NEWS: '0'
+          BUILD_GRAPHS: '0'
+          SYNC_STOCK_LOCATIONS: '0'
+        run: bash run_daily_sync.sh
+
       - name: Build pages site (offline)
         run: python scripts/build_pages_site.py
 
