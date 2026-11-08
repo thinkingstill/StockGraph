@@ -412,6 +412,34 @@ def render_unified_app() -> str:
         document.getElementById('manifestStatus').textContent = `数据清单加载失败: ${e.message}`;
       }
     }
+    // 分片模块：主文件只带索引，按索引并发拉取分片后原地合并回 payload。
+    // 合并后结构与非分片版本完全一致，渲染层无需感知分片。
+    async function hydrateShards(section, payload) {
+      const shardIndex = payload.shard_index || {};
+      const field = payload.shard_field || 'graphs';
+      const keys = Object.keys(shardIndex);
+      if (!keys.length) return payload;
+      const merged = {};
+      const CONCURRENCY = 8;
+      for (let i = 0; i < keys.length; i += CONCURRENCY) {
+        const batch = keys.slice(i, i + CONCURRENCY);
+        const results = await Promise.all(
+          batch.map(async (k) => {
+            try {
+              return [k, await fetchJson(shardIndex[k])];
+            } catch (e) {
+              return [k, null];
+            }
+          })
+        );
+        results.forEach(([k, v]) => {
+          if (v !== null) merged[k] = v;
+        });
+      }
+      payload[field] = merged;
+      return payload;
+    }
+
     async function loadTab(name) {
       if (!state.manifest || state.loaded[name]) return;
       const section = state.manifest.sections[name];
@@ -459,6 +487,7 @@ def render_unified_app() -> str:
       }
       try {
         const payload = await fetchJson(section.path);
+        if (section.sharded) await hydrateShards(section, payload);
         if (name === 'dragon_query') renderDragonQuery(root, payload);
         if (name === 'dragon_graph') renderDragonGraph(root, payload);
         if (name === 'market_hot') renderMarketHot(root, payload);

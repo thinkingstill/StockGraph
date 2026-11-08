@@ -57,6 +57,12 @@ on:
   push:
     branches:
       - main
+    # 数据/产物/文档类提交不触发 Pages 重建，避免 bot 提交自激循环
+    paths-ignore:
+      - "data/**"
+      - "outputs/**"
+      - "docs/**"
+      - "**.md"
   schedule:
     - cron: '30 0 * * *'
 
@@ -66,47 +72,48 @@ permissions:
   id-token: write
 
 concurrency:
-  group: build-pages-${{ github.ref }}
+  group: build-pages-${{ github.event_name }}-${{ github.ref }}
   cancel-in-progress: true
 
+env:
+  PYTHON_VERSION: '3.11'
+  PIP_DISABLE_PIP_VERSION_CHECK: '1'
+
 jobs:
+  # push 只做轻量校验：字节编译 + 离线构建，不跑完整同步
   validate:
     if: github.event_name == 'push'
     runs-on: ubuntu-latest
-    env:
-      PYTHON_BIN: python
-      SYNC_DRAGON_TIGER: '0'
-      SYNC_MARKET_OVERVIEW: '0'
-      SYNC_NEWS: '0'
-      BUILD_GRAPHS: '0'
-      SYNC_STOCK_LOCATIONS: '0'
+    timeout-minutes: 15
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
 
       - name: Setup Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v6
         with:
-          python-version: '3.11'
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: pip
 
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
           python -m pip install -e .
 
-      - name: Offline validation
-        run: |
-          python -m compileall src scripts
-          bash run_daily_sync.sh
-          python scripts/build_pages_site.py
+      - name: Byte-compile
+        run: python -m compileall -q src scripts
 
+      - name: Build pages site (offline)
+        run: python scripts/build_pages_site.py
+
+  # 定时/手动触发：跑同步 -> 提交数据 -> 上传 Pages 产物
   build-pages:
     if: github.event_name != 'push'
     runs-on: ubuntu-latest
+    timeout-minutes: 90
     outputs:
       should_deploy: ${{ steps.sync.outputs.should_deploy }}
     env:
-      PYTHON_BIN: python
       TARGET_DATE: ${{ inputs.target_date || '' }}
       BACKFILL_START_DATE: ${{ inputs.backfill_start_date || '' }}
       BACKFILL_END_DATE: ${{ inputs.backfill_end_date || '' }}
@@ -128,14 +135,15 @@ jobs:
       FAIL_ON_TASK_FAILURE: '1'
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
         with:
           fetch-depth: 0
 
       - name: Setup Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v6
         with:
-          python-version: '3.11'
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: pip
 
       - name: Install dependencies
         run: |
@@ -143,7 +151,7 @@ jobs:
           python -m pip install -e .
 
       - name: Configure GitHub Pages
-        uses: actions/configure-pages@v5
+        uses: actions/configure-pages@v6
 
       - name: Run routine or backfill sync
         id: sync
@@ -184,8 +192,7 @@ jobs:
 
       - name: Build Pages site
         if: steps.sync.outputs.should_deploy == 'true'
-        run: |
-          python scripts/build_pages_site.py
+        run: python scripts/build_pages_site.py
 
       - name: Commit generated data
         if: steps.sync.outputs.should_commit == 'true'
@@ -194,18 +201,12 @@ jobs:
           set -euo pipefail
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          git add -f \
-            data/market_overview \
-            outputs/app \
-            outputs/dragon_tiger \
-            outputs/html \
-            outputs/market \
-            outputs/.nojekyll
+          git add -A data/market_overview outputs/app outputs/dragon_tiger outputs/html outputs/market outputs/.nojekyll
           if [[ -e data/reference/stock_location_mapping.json ]]; then
-            git add -f data/reference/stock_location_mapping.json
+            git add data/reference/stock_location_mapping.json
           fi
           if [[ -e data/shared_state/stock_location_profile_cache.json ]]; then
-            git add -f data/shared_state/stock_location_profile_cache.json
+            git add data/shared_state/stock_location_profile_cache.json
           fi
           if git diff --cached --quiet; then
             echo "[stockgraph] no generated data changes to commit"
@@ -215,9 +216,24 @@ jobs:
             git push origin HEAD:main
           fi
 
+      - name: Check artifact size
+        if: steps.sync.outputs.should_deploy == 'true'
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "== outputs 下最大的 10 个文件 =="
+          find outputs -type f -printf '%s\t%p\n' | sort -rn | head -10 | awk -F'\t' '{printf "%8.2f MB  %s\n", $1/1048576, $2}'
+          # GitHub Pages artifact 单文件上限 100MB（与 git 一致），提前失败并给出明确信息
+          BIG=$(find outputs -type f -size +95M || true)
+          if [[ -n "$BIG" ]]; then
+            echo "::error::以下产物超过 95MB，会被 GitHub 拒绝，请检查分片是否生效："
+            echo "$BIG"
+            exit 1
+          fi
+
       - name: Upload Pages artifact
         if: steps.sync.outputs.should_deploy == 'true'
-        uses: actions/upload-pages-artifact@v3
+        uses: actions/upload-pages-artifact@v4
         with:
           path: outputs
 
@@ -227,6 +243,7 @@ jobs:
       name: github-pages
       url: ${{ steps.deployment.outputs.page_url }}
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     needs: build-pages
     concurrency:
       group: github-pages-deploy
@@ -234,20 +251,23 @@ jobs:
     steps:
       - name: Deploy to GitHub Pages
         id: deployment
-        uses: actions/deploy-pages@v4
+        uses: actions/deploy-pages@v5
 
+  # push 触发时只重建并部署静态站点，不跑数据同步
   build-push-pages:
     if: github.event_name == 'push'
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     needs: validate
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
 
       - name: Setup Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v6
         with:
-          python-version: '3.11'
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: pip
 
       - name: Install dependencies
         run: |
@@ -255,13 +275,24 @@ jobs:
           python -m pip install -e .
 
       - name: Configure GitHub Pages
-        uses: actions/configure-pages@v5
+        uses: actions/configure-pages@v6
 
       - name: Build Pages site
         run: python scripts/build_pages_site.py
 
+      - name: Check artifact size
+        shell: bash
+        run: |
+          set -euo pipefail
+          BIG=$(find outputs -type f -size +95M || true)
+          if [[ -n "$BIG" ]]; then
+            echo "::error::以下产物超过 95MB，会被 GitHub 拒绝："
+            echo "$BIG"
+            exit 1
+          fi
+
       - name: Upload Pages artifact
-        uses: actions/upload-pages-artifact@v3
+        uses: actions/upload-pages-artifact@v4
         with:
           path: outputs
 
@@ -271,6 +302,7 @@ jobs:
       name: github-pages
       url: ${{ steps.deployment.outputs.page_url }}
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     needs: build-push-pages
     concurrency:
       group: github-pages-deploy
@@ -278,4 +310,4 @@ jobs:
     steps:
       - name: Deploy to GitHub Pages
         id: deployment
-        uses: actions/deploy-pages@v4
+        uses: actions/deploy-pages@v5

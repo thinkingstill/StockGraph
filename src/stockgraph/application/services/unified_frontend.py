@@ -37,6 +37,10 @@ class UnifiedFrontendService:
 
     def generate(self) -> list[Path]:
         ensure_runtime_dirs()
+        # 清理上一次构建遗留的分片，避免日期滚动后残留孤儿文件
+        shard_root = APP_DATA_DIR / "shards"
+        if shard_root.exists():
+            shutil.rmtree(shard_root, ignore_errors=True)
         self.dragon_tiger_repository.initialize_database()
         self.news_repository.initialize_database()
         # 构建全局股票名称映射
@@ -1280,11 +1284,98 @@ class UnifiedFrontendService:
             })
         return sorted(result, key=lambda item: (item["count"], item["buy"]), reverse=True)[:limit]
 
-    @staticmethod
-    def _write_section(filename: str, payload: dict) -> dict:
+    # 单文件超过该阈值就按日期分片，避免产物突破 GitHub 100MB 单文件上限
+    # 也避免前端一次拉取上百 MB 卡死。
+    SECTION_SHARD_THRESHOLD_BYTES = 10 * 1024 * 1024
+
+    # 可按日期切分的字典字段：{字段名: 日期列表字段名}
+    _DATE_KEYED_FIELDS = {
+        "graphs": "date_list",
+        "dates": "date_list",
+        "records_by_date": "date_list",
+        "all_operations": "date_list",
+    }
+
+    @classmethod
+    def _write_section(cls, filename: str, payload: dict) -> dict:
+        """写出模块数据；超大产物按日期自动分片。
+
+        分片只针对「按日期分组的字典」字段。主文件保留全部元数据，
+        日期字典被替换成空对象并附带 shard_index 索引，前端按索引懒加载
+        分片后原地合并，渲染层拿到的结构与未分片时完全一致。
+        """
+        raw = json.dumps(payload, ensure_ascii=False, default=str)
+        if len(raw.encode("utf-8")) <= cls.SECTION_SHARD_THRESHOLD_BYTES:
+            path = APP_DATA_DIR / filename
+            path.write_text(raw, encoding="utf-8")
+            return {"available": True, "path": f"./data/{filename}", "message": ""}
+
+        shard_spec = cls._detect_shard_field(payload)
+        if shard_spec is None:
+            # 无法按日期拆分（结构不符合预期），只能整体写出
+            path = APP_DATA_DIR / filename
+            path.write_text(raw, encoding="utf-8")
+            logger.warning(
+                "%s 体积 %.1fMB 超过阈值但无法按日期拆分，仍整体写出",
+                filename,
+                len(raw.encode("utf-8")) / 1024 / 1024,
+            )
+            return {"available": True, "path": f"./data/{filename}", "message": ""}
+
+        field, date_field = shard_spec
+        by_date: dict = payload.get(field) or {}
+        section = Path(filename).stem
+        shard_dir = APP_DATA_DIR / "shards" / section
+        shard_dir.mkdir(parents=True, exist_ok=True)
+
+        shard_index: dict[str, str] = {}
+        written = 0
+        for key, value in by_date.items():
+            shard_path = shard_dir / f"{key}.json"
+            shard_path.write_text(
+                json.dumps(value, ensure_ascii=False, default=str), encoding="utf-8"
+            )
+            shard_index[str(key)] = f"./data/shards/{section}/{key}.json"
+            written += 1
+
+        sharded_payload = dict(payload)
+        sharded_payload[field] = {}
+        sharded_payload["shard_field"] = field
+        sharded_payload["shard_index"] = shard_index
         path = APP_DATA_DIR / filename
-        path.write_text(json.dumps(payload, ensure_ascii=False, default=str), encoding="utf-8")
-        return {"available": True, "path": f"./data/{filename}", "message": ""}
+        path.write_text(
+            json.dumps(sharded_payload, ensure_ascii=False, default=str), encoding="utf-8"
+        )
+        logger.info(
+            "%s 已按日期分片：%d 个分片，主索引 %.1fKB（原 %.1fMB）",
+            filename,
+            written,
+            path.stat().st_size / 1024,
+            len(raw.encode("utf-8")) / 1024 / 1024,
+        )
+        return {
+            "available": True,
+            "path": f"./data/{filename}",
+            "message": "",
+            "sharded": True,
+            "shard_field": field,
+            "shard_date_field": date_field,
+            "shard_count": written,
+        }
+
+    @classmethod
+    def _detect_shard_field(cls, payload: dict) -> tuple[str, str] | None:
+        """识别 payload 中可切分的日期字典字段。"""
+        for field, date_field in cls._DATE_KEYED_FIELDS.items():
+            value = payload.get(field)
+            if isinstance(value, dict) and value and isinstance(payload.get(date_field), list):
+                return field, date_field
+        # 兜底：任意非空 dict 且存在 date_list
+        if isinstance(payload.get("date_list"), list):
+            for field, value in payload.items():
+                if isinstance(value, dict) and value and field not in ("shard_index",):
+                    return field, "date_list"
+        return None
 
     @staticmethod
     def _copy_static_assets() -> None:

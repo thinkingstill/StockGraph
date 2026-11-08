@@ -25,23 +25,27 @@ concurrency:
   group: sync-stock-news
   cancel-in-progress: false
 
+env:
+  PYTHON_VERSION: '3.11'
+  PIP_DISABLE_PIP_VERSION_CHECK: '1'
+
 jobs:
   sync-news:
     runs-on: ubuntu-latest
+    timeout-minutes: 60
     outputs:
       has_changes: ${{ steps.sync.outputs.has_changes }}
-    env:
-      PYTHON_BIN: python
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
         with:
           fetch-depth: 0
 
       - name: Setup Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v6
         with:
-          python-version: '3.11'
+          python-version: ${{ env.PYTHON_VERSION }}
+          cache: pip
 
       - name: Install dependencies
         run: |
@@ -49,37 +53,37 @@ jobs:
           python -m pip install -e .
 
       - name: Configure GitHub Pages
-        uses: actions/configure-pages@v5
+        uses: actions/configure-pages@v6
 
       - name: Sync news
         id: sync
         shell: bash
         run: |
           set -euo pipefail
-          
-          # 同步所有股票代码列表
+
+          # 同步股票代码列表；脚本内部已实现多源降级，
+          # 境外出口被 reset 时会自动回落到仓库内已有列表，不再让整条链失败
           echo "Syncing all stock codes..."
           python scripts/sync_stock_codes.py
-          
+
           # 默认热门股票列表（可根据需要调整）
           DEFAULT_CODES="000001,000858,600519,000333,002475,300750,601318,600036,000651,002594,300059,601899,600900,000725,002415,300274,300308,002371,603259,002714"
-          
+
           STOCK_CODES="${{ inputs.stock_codes || '' }}"
           if [[ -z "$STOCK_CODES" ]]; then
             STOCK_CODES="$DEFAULT_CODES"
           fi
-          
+
           LIMIT="${{ inputs.limit || '30' }}"
-          
+
           echo "Syncing news for stocks: $STOCK_CODES"
           echo "Limit per stock: $LIMIT"
-          
-          # 运行新闻同步脚本
+
           python scripts/sync_news.py --stock-codes "$STOCK_CODES" --stock-limit "$LIMIT"
-          
-          # 重新构建前端数据
+
+          # 重新构建前端数据（含超大模块自动分片）
           python scripts/build_unified_app.py
-          
+
           # 检查是否有变更
           if git diff --quiet outputs/app/data/ai_analysis.json outputs/app/data/stock_news.json data/reference/all_stock_codes.json 2>/dev/null; then
             echo "has_changes=false" >> "$GITHUB_OUTPUT"
@@ -94,12 +98,9 @@ jobs:
           set -euo pipefail
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          
-          # 添加更新的数据文件
-          git add -f outputs/app/data/ || true
-          git add -f data/shared_state/news.db || true
-          git add -f data/reference/all_stock_codes.json || true
-          
+
+          git add -A outputs/app/data data/reference/all_stock_codes.json
+
           if git diff --cached --quiet; then
             echo "No changes to commit"
           else
@@ -110,7 +111,7 @@ jobs:
 
       - name: Upload Pages artifact
         if: steps.sync.outputs.has_changes == 'true'
-        uses: actions/upload-pages-artifact@v3
+        uses: actions/upload-pages-artifact@v4
         with:
           path: outputs
 
@@ -120,6 +121,7 @@ jobs:
       name: github-pages
       url: ${{ steps.deployment.outputs.page_url }}
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     needs: sync-news
     concurrency:
       group: github-pages-deploy
@@ -127,4 +129,4 @@ jobs:
     steps:
       - name: Deploy to GitHub Pages
         id: deployment
-        uses: actions/deploy-pages@v4
+        uses: actions/deploy-pages@v5

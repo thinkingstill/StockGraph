@@ -25,6 +25,22 @@
 
 不要手改 `outputs/app/index.html` 作为源代码；应改 `src/stockgraph/presentation/templates/unified_app.py`，再运行 `python3 scripts/build_unified_app.py` 生成产物。`outputs/app/data/*.json` 是运行时数据产物，构建时可能只因生成时间或重新序列化产生巨大 diff，通常不要提交。
 
+#### 超大模块自动分片
+
+单个模块 JSON 超过 10MB 时，`_write_section` 会自动按日期拆片：
+
+```
+outputs/app/data/stock_super_graph.json           # 主索引：元数据 + shard_index（KB 级）
+outputs/app/data/shards/stock_super_graph/
+  ├── 2026-11-06.json
+  └── ...
+```
+
+主文件保留 `date_list`、`schema_version` 等元数据，日期字典被置空并附 `shard_index` 映射；manifest 的对应 section 会带 `sharded: true` / `shard_field` / `shard_count`。前端 `hydrateShards()` 按索引并发拉取（8 路并发）后原地合并回 payload，**渲染层拿到的结构与未分片时完全一致**，无需改任何 `render*` 函数。
+
+引入分片的原因：全 A 图谱产物曾达到 123MB，突破 GitHub 单文件 100MB 上限导致 `Build and Deploy Pages` 直接 push 失败；同时前端一次性拉取上百 MB 也会卡死。分片后最大单文件降至 15MB 左右。分片目录需入库，故 `.gitignore` 中显式放行 `outputs/app/data/shards/`。
+
+
 ### 统一前端模块映射
 
 | 页面模块 | 前端渲染函数 | 数据构建函数 | 数据文件 |

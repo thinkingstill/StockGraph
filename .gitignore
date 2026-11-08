@@ -44,3 +44,8 @@ outputs/app/*.html
 !outputs/html/.gitkeep
 !outputs/market/.gitkeep
 !outputs/dragon_tiger/.gitkeep
+
+# 分片产物需要入库（主索引 + 按日期分片），单文件远小于 100MB 上限。
+# 不加这条，outputs/app/data/*.json 的忽略规则会把分片一并吞掉。
+!outputs/app/data/shards/
+!outputs/app/data/shards/**
