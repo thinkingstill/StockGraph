@@ -70,6 +70,25 @@ PY
 node --check /tmp/stockgraph-inline.js
 ```
 
+改动图存储、新闻采集、实体识别时，先跑测试：
+
+```bash
+pip install -e ".[dev]"
+pytest                                    # 78 passed
+
+# 前端浏览器冒烟（需先构建 outputs/app，并安装 playwright）
+pip install playwright && playwright install chromium
+python3 scripts/smoke_frontend.py         # 12 passed
+
+# 图后端一致性（两边的输出应当逐项相同）
+python3 scripts/graph_backend.py status
+python3 scripts/graph_query.py pagerank --type seat_projection --date 2026-11-05 --limit 5
+
+# 全量构建与一致性检查
+python3 scripts/build_graph_snapshots.py --start-date 2026-01-01 --end-date 2026-11-06 --persist
+python3 scripts/graph_backend.py migrate --to falkordb
+```
+
 如果运行 `build_unified_app.py` 后看到 `outputs/app/data/*.json` 只有生成时间或序列化差异，通常应恢复这些无关数据产物，只保留源码和必要 HTML 产物变更。
 
 ## 目录结构
@@ -119,6 +138,12 @@ StockGraph/
 - **🤖 AI 智能分析**：统一前端新增「AI 分析」tab，支持配置兼容 OpenAI 的 API（baseurl/key/model），选择股票后自动组装新闻+龙虎榜上下文，调用大模型进行流式分析
 - 图节点/边模型、二部图/投影图构建骨架
 - 图快照持久化与图分析 CLI 入口
+- **图存储抽象层 + FalkorDB 后端**：`infrastructure/graph/` 定义了 `GraphStore` 协议，SQLite 与 [FalkorDB](https://github.com/FalkorDB/falkordb) 两种实现可**一键切换**，全部分析结果（PageRank/社区/最短路/邻居）逐项一致。详见 [`docs/graph_backend.md`](docs/graph_backend.md)
+- **图分析 CLI**：`scripts/graph_query.py` 提供 `stats/top/pagerank/communities/neighbors/path`，两种后端通用
+- **真实新闻三源**：财联社电报、东方财富 7×24 快讯、RSS/Atom，全部真实抓取（原实现是返回空批次的占位）
+- **个股新闻自研适配器**：绕过 akshare 在 pandas 3.0 下的 `ArrowInvalid` 崩溃，直连东财搜索接口
+- **全量数据回补脚本**：`backfill_dragon_tiger.py` / `backfill_market_daily.py` / `backfill_news.py`，支持断点续传与限速
+- **测试**：`tests/` 下 78 个用例，覆盖图算法、后端一致性、实体识别、数据源与数据库并发；另有 `scripts/smoke_frontend.py` 用真实浏览器逐模块验收（含图表数值合理性校验）
 - 市场概览模块：全市场行情、雪球热度、行业强弱、3D 热度可视化
 - **全 A 股超大关系图谱**：基于 ECharts Graph 展示全市场股票节点，并按交易日叠加行业、交易所、涨跌状态、交易分层、龙虎榜席位、知名游资别名、新闻、事件、情绪等关系节点
 - **A 股中国城市气泡图**：基于 ECharts 中国地图按交易日展示上市公司城市分布，气泡大小关联市值，颜色关联当日涨跌，并复用已有大模型 API 配置做行业新闻关联分析
@@ -1002,3 +1027,60 @@ src/stockgraph/
 2. ✅ 新闻与龙虎榜数据联接，形成可解释事件上下文。（已完成：AI 分析页面自动合并新闻+龙虎榜上下文）
 3. 再做图构建和共现分析。
 4. ✅ 接入大模型分析。（已完成：前端直调 OpenAI 兼容 API，支持流式输出，可配置 baseurl/key/model）
+
+---
+
+## 图数据库后端：SQLite / FalkorDB 一键切换
+
+关系图默认存 SQLite。需要跨快照的大图交互查询、或想把图接到别的分析工具时，可以切到 FalkorDB。
+
+```bash
+# 1) 拉起 FalkorDB（Docker）
+docker compose up -d
+
+# 2) 切换并把历史快照全部迁移过去
+python3 scripts/graph_backend.py switch falkordb --migrate
+
+# 3) 切回 SQLite
+python3 scripts/graph_backend.py switch sqlite
+```
+
+切换只改配置，**不需要重启服务、不需要改业务代码**。所有图读写都经过
+`stockgraph.infrastructure.graph.create_graph_store()`，这是全项目唯一的图存储入口。
+
+配置优先级：环境变量 > `config/graph_backend.json` > 默认 `sqlite`。
+
+| 变量 | 作用 |
+| --- | --- |
+| `STOCKGRAPH_GRAPH_BACKEND` | 强制后端：`sqlite` / `falkordb` / `auto` |
+| `STOCKGRAPH_FALKORDB_HOST` / `_PORT` / `_GRAPH` | 连接参数 |
+| `STOCKGRAPH_FALKORDB_PASSWORD` / `_USERNAME` | ACL 认证 |
+| `STOCKGRAPH_GRAPH_FALLBACK` | `0` 关闭自动回退 |
+
+图分析算法（PageRank、标签传播社区发现、BFS 最短路、连通分量）**刻意只用标准库实现**
+并放在两个后端之外，保证同一张图在两边给出**完全相同的数值**。实测 609 张快照、
+7,967 节点、443,456 条边，两侧逐项一致。
+
+完整说明见 [`docs/graph_backend.md`](docs/graph_backend.md)。
+
+## 数据回补
+
+三个脚本都支持断点续传与限速，可反复重跑。
+
+```bash
+# 龙虎榜（自动跳过已入库日期）
+python3 scripts/backfill_dragon_tiger.py --start 2026-01-01 --end 2026-11-06 --sleep 0.4
+
+# 全 A 日行情（新浪 K 线，绕开东财 push2 封锁）
+python3 scripts/backfill_market_daily.py --start 2026-01-01 --end 2026-11-06 --workers 3
+
+# 新闻（财联社 + 东财快讯 + 个股新闻，按游标一直往前翻）
+python3 scripts/backfill_news.py --source all --start 2026-01-01 --sleep 0.2
+```
+
+**口径说明**（不掩饰估算）：新浪日线不含成交额，`成交额` 用 `成交量 × (最高+最低+收盘)/3`
+估算并在数据里标 `成交额估算=true`；雪球热度接口按 IP 封锁，历史热度无法回补，不做伪造。
+
+## 代码审计
+
+缺陷清单、修复过程与仍待实现的项，见 [`docs/AUDIT.md`](docs/AUDIT.md)。

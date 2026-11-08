@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import json
+import logging
 import math
+import os
 import shutil
 from collections import defaultdict
 from datetime import datetime
@@ -20,6 +22,8 @@ from stockgraph.domain.market_overview import get_exchange
 from stockgraph.infrastructure.db import DragonTigerRepository
 from stockgraph.infrastructure.db.repositories import NewsRepository
 from stockgraph.presentation.templates import render_unified_app
+
+logger = logging.getLogger(__name__)
 
 
 class UnifiedFrontendService:
@@ -266,30 +270,50 @@ class UnifiedFrontendService:
                     industry,
                     {
                         "total_change_pct": 0.0,
+                        "stock_count": 0,
                         "top_stock_code": "",
                         "top_stock_name": "",
                         "top_stock_change_pct": None,
                     },
                 )
                 item["total_change_pct"] += change_pct
+                item["stock_count"] += 1
                 if item["top_stock_change_pct"] is None or change_pct > item["top_stock_change_pct"]:
                     item["top_stock_code"] = code
                     item["top_stock_name"] = name
                     item["top_stock_change_pct"] = change_pct
             if not aggregate:
                 continue
-            sorted_items = sorted(aggregate.items(), key=lambda item: item[1]["total_change_pct"], reverse=True)
+            sorted_items = sorted(
+                aggregate.items(),
+                key=lambda item: (
+                    item[1]["total_change_pct"] / item[1]["stock_count"]
+                    if item[1]["stock_count"]
+                    else 0.0
+                ),
+                reverse=True,
+            )
             top_industry, top_info = sorted_items[0]
             bottom_industry, bottom_info = sorted_items[-1]
+            top_avg = (
+                top_info["total_change_pct"] / top_info["stock_count"] if top_info["stock_count"] else 0.0
+            )
+            bottom_avg = (
+                bottom_info["total_change_pct"] / bottom_info["stock_count"]
+                if bottom_info["stock_count"]
+                else 0.0
+            )
             years.setdefault(trade_date[:4], []).append({
                 "date": f"{trade_date[:4]}-{trade_date[4:6]}-{trade_date[6:8]}",
                 "top_industry": top_industry,
-                "top_change_pct": round(top_info["total_change_pct"], 4),
+                "top_change_pct": round(top_avg, 4),
+                "top_industry_stock_count": int(top_info["stock_count"]),
                 "top_stock_code": top_info["top_stock_code"],
                 "top_stock_name": top_info["top_stock_name"],
                 "top_stock_change_pct": round(float(top_info["top_stock_change_pct"] or 0), 4),
                 "bottom_industry": bottom_industry,
-                "bottom_change_pct": round(bottom_info["total_change_pct"], 4),
+                "bottom_change_pct": round(bottom_avg, 4),
+                "bottom_industry_stock_count": int(bottom_info["stock_count"]),
             })
         if not years:
             return self._missing("行业日历数据为空")
@@ -298,11 +322,18 @@ class UnifiedFrontendService:
         return self._write_section("market_calendar.json", {"years": years})
 
     def _build_stock_news_data(self) -> dict:
-        """构建个股新闻数据，供前端展示。"""
-        stock_codes = self.news_repository.list_stock_codes_with_news()
+        """构建个股新闻数据，供前端展示。
+
+        用一条窗口函数查询拿到「每只股票最近 N 条新闻」。
+        原实现对库里每只有新闻的股票各调一次 `query_news_by_stock`，
+        新闻量到 33 万条、股票 6000+ 只时，构建直接卡死（每只都要全表 LIKE 扫描）。
+        """
+        grouped = self.news_repository.query_news_grouped_by_stock(
+            limit_per_stock=20, max_stocks=600
+        )
 
         # 即使没有数据也返回有效结构，让前端可以展示采集和AI分析功能
-        if not stock_codes:
+        if not grouped:
             return {
                 "available": True,
                 "path": "./data/stock_news.json",
@@ -313,56 +344,40 @@ class UnifiedFrontendService:
                 "total_articles": 0,
             }
 
-        # 获取所有新闻
-        all_news = self.news_repository.query_all_news(limit=500)
+        stock_codes = sorted(grouped)
+        stock_news_map = {code: grouped[code] for code in stock_codes}
 
-        # 按股票代码分组
-        stock_news_map: dict[str, list[dict]] = {}
-        for article in all_news:
-            code = article.get("stock_code", "")
-            if code:
-                stock_news_map.setdefault(code, []).append(article)
-
-        # 也通过实体关联补充
-        for code in stock_codes:
-            if code not in stock_news_map:
-                related = self.news_repository.query_news_by_stock(code, limit=30)
-                if related:
-                    stock_news_map[code] = related
-
-        # 构建汇总数据
         stock_summaries = []
-        for code in stock_codes:
-            news_list = stock_news_map.get(code, [])
-            if not news_list:
-                continue
-            # 统计情绪分布
+        for code, news_list in stock_news_map.items():
             sentiment_counts = {"利好": 0, "利空": 0, "中性": 0}
             for n in news_list:
-                s = n.get("sentiment", "中性")
+                s = n.get("sentiment") or "中性"
                 sentiment_counts[s] = sentiment_counts.get(s, 0) + 1
-            stock_summaries.append({
-                "stock_code": code,
-                "news_count": len(news_list),
-                "latest_news": news_list[0].get("title", "") if news_list else "",
-                "latest_time": news_list[0].get("published_at", "") if news_list else "",
-                "sentiment_summary": sentiment_counts,
-            })
-
-        # 按新闻数量排序
+            stock_summaries.append(
+                {
+                    "stock_code": code,
+                    "news_count": len(news_list),
+                    "latest_news": news_list[0].get("title", "") if news_list else "",
+                    "latest_time": news_list[0].get("published_at", "") if news_list else "",
+                    "sentiment_summary": sentiment_counts,
+                }
+            )
         stock_summaries.sort(key=lambda x: x["news_count"], reverse=True)
 
         payload = {
             "stock_codes": stock_codes,
             "stock_summaries": stock_summaries,
             "stock_news": stock_news_map,
-            "total_articles": len(all_news),
+            "total_articles": sum(len(v) for v in stock_news_map.values()),
         }
         return self._write_section("stock_news.json", payload)
 
     def _build_stock_super_graph_data(self) -> dict:
-        """构建全 A 股可扩展图谱：股票全集 + 行业/交易/席位/新闻等关系。"""
-        stock_files = sorted(MARKET_DATA_DIR.glob("stock_daily_*.json"), reverse=True)
+        """构建全 A 股可扩展图谱：股票全集 + 行业/交易/席位/新闻等关系。
+
+        默认只取最近 25 个交易日（STOCKGRAPH_SUPER_GRAPH_DAYS 可调，约 110MB）。
+        """
+        stock_files = self._limited_stock_files("STOCKGRAPH_SUPER_GRAPH_DAYS", 25)
         if not stock_files:
             return self._missing("全 A 图谱需要先生成 stock_daily 市场数据")
 
@@ -421,8 +436,11 @@ class UnifiedFrontendService:
         return self._write_section("stock_super_graph.json", payload)
 
     def _build_china_city_bubble_data(self) -> dict:
-        """构建按城市聚合的中国地图气泡数据，复用全市场日行情和基础股本数据。"""
-        stock_files = sorted(MARKET_DATA_DIR.glob("stock_daily_*.json"), reverse=True)
+        """构建按城市聚合的中国地图气泡数据，复用全市场日行情和基础股本数据。
+
+        默认只取最近 60 个交易日（STOCKGRAPH_CITY_BUBBLE_DAYS 可调）。
+        """
+        stock_files = self._limited_stock_files("STOCKGRAPH_CITY_BUBBLE_DAYS", 60)
         if not stock_files:
             return self._missing("城市气泡图需要先生成 stock_daily 市场数据")
 
@@ -1273,6 +1291,60 @@ class UnifiedFrontendService:
         china_map = REFERENCE_DATA_DIR / "china_echarts_map.js"
         if china_map.exists():
             shutil.copyfile(china_map, APP_DATA_DIR / "china_echarts_map.js")
+
+    # 全市场日行情的合理下限。A 股现约 5500 只；留足退市/停牌余量，低于此值视为数据残缺。
+    MIN_STOCKS_PER_DAY = 3000
+
+    @classmethod
+    def _limited_stock_files(cls, env_name: str, default_days: int) -> list[Path]:
+        """按天数截取最近的 stock_daily 文件（只读使用，绝不回写源文件）。
+
+        全 A 超图与城市气泡会把每天 5500 只股票全部展开成节点。
+        数据基线从 21 个交易日涨到 203 个交易日后：
+        - 产物会膨胀到约 900MB，前端加载不动；
+        - 构建过程也会因内存/时长被系统杀掉（实测 exit 137）。
+
+        因此这两个重型模块默认只取最近 N 个交易日，可用环境变量调整；
+        传 0 表示不限制（数据量小时可关闭）。
+
+        注意：本方法只负责"少读几天"，**不能**被用作采集/回补阶段的输入。
+        一旦把它的结果当成数据全集去重写 stock_daily_*.json，
+        就会把 5500 行的日文件覆盖成 4 行，且后续所有聚合模块静默失真。
+        因此这里额外校验每日行数，发现残缺文件立即告警。
+        """
+        files = sorted(MARKET_DATA_DIR.glob("stock_daily_*.json"), reverse=True)
+        try:
+            days = int(os.environ.get(env_name, str(default_days)))
+        except (TypeError, ValueError):
+            days = default_days
+        selected = files if days <= 0 else files[:days]
+        cls._warn_if_truncated(selected)
+        return selected
+
+    @classmethod
+    def _warn_if_truncated(cls, files: list[Path]) -> None:
+        """检测残缺的日行情文件：行数远低于全市场规模时告警。
+
+        这是"静默失真"的兜底闸门——超图、城市气泡、行业强弱、行情日历
+        全部基于这些文件聚合，任一文件被覆盖成几行都不会报错，只会让结果变小。
+        """
+        truncated: list[str] = []
+        for path in files:
+            try:
+                rows = json.loads(path.read_text(encoding="utf-8"))
+            except (OSError, ValueError):
+                continue
+            count = len(rows) if isinstance(rows, list) else 0
+            if count < cls.MIN_STOCKS_PER_DAY:
+                truncated.append(f"{path.name}({count} 行)")
+        if truncated:
+            logger.warning(
+                "检测到 %d 个日行情文件疑似残缺（< %d 行）：%s；"
+                "相关聚合结果会偏小，请先执行行情回补再重建。",
+                len(truncated),
+                cls.MIN_STOCKS_PER_DAY,
+                ", ".join(truncated[:5]) + (" ..." if len(truncated) > 5 else ""),
+            )
 
     @staticmethod
     def _missing(message: str) -> dict:

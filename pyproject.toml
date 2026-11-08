@@ -22,3 +22,18 @@ package-dir = {"" = "src"}
 
 [tool.setuptools.packages.find]
 where = ["src"]
+
+[project.optional-dependencies]
+# FalkorDB 图数据库后端（可选，默认使用 SQLite）
+falkordb = ["falkordb>=1.0.0"]
+# 东方财富部分接口需要浏览器 TLS 指纹，装了这个适配器更稳
+http = ["curl_cffi>=0.7.0"]
+dev = [
+    "pytest>=8.0.0",
+    "pytest-cov>=5.0.0",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src"]
+addopts = "-q"

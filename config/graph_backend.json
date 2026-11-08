@@ -1,0 +1,12 @@
+{
+  "backend": "sqlite",
+  "falkordb": {
+    "host": "127.0.0.1",
+    "port": 6379,
+    "graph_name": "stockgraph",
+    "username": "",
+    "password": "",
+    "timeout": 5
+  },
+  "fallback_to_sqlite": true
+}

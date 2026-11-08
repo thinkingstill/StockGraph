@@ -5,6 +5,8 @@ PROJECT_ROOT = Path(__file__).resolve().parents[3]
 SRC_DIR = PROJECT_ROOT / "src"
 SOURCE_DIR = PROJECT_ROOT / "source"
 DATA_DIR = PROJECT_ROOT / "data"
+CONFIG_DIR = PROJECT_ROOT / "config"
+GRAPH_BACKEND_CONFIG_PATH = CONFIG_DIR / "graph_backend.json"
 SHARED_STATE_DIR = DATA_DIR / "shared_state"
 REFERENCE_DATA_DIR = DATA_DIR / "reference"
 MARKET_DATA_DIR = DATA_DIR / "market_overview"
@@ -24,3 +26,4 @@ def ensure_runtime_dirs() -> None:
     MARKET_OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
     DRAGON_TIGER_OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
     APP_DATA_DIR.mkdir(parents=True, exist_ok=True)
+    CONFIG_DIR.mkdir(parents=True, exist_ok=True)

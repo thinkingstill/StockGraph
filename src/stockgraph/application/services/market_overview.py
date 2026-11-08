@@ -24,9 +24,27 @@ class MarketOverviewService:
         self.source = source or AkshareMarketOverviewSource()
         self.repository = repository or MarketOverviewRepository()
 
+    @staticmethod
+    def _normalize_trade_date(value: str) -> str:
+        """把日期统一成 YYYY-MM-DD。
+
+        数据源 `get_exchange_date()` 返回"报告时间"是 `20261106`（无横线），
+        而历史回补写入库用的是 `2026-11-06`（带横线）。不统一的话，
+        同一天会在 `market_daily_snapshots` 里分裂成两批（实测 111 万行带横线
+        vs 5578 行无横线），任何按日期聚合的查询都会漏一半。
+        """
+        text = str(value or "").strip()
+        if not text:
+            return text
+        digits = "".join(ch for ch in text if ch.isdigit())
+        if len(digits) == 8:
+            return f"{digits[:4]}-{digits[4:6]}-{digits[6:8]}"
+        # 已经是 YYYY-MM-DD 或其它格式，原样返回（带横线的输入保持不变）
+        return text
+
     def sync_daily(self, trade_date: str | None = None) -> dict:
         ensure_runtime_dirs()
-        target_date = trade_date or self.source.get_exchange_date()
+        target_date = self._normalize_trade_date(trade_date or self.source.get_exchange_date())
         basic_info = self._load_stock_basic_info()
         industry_mapping = self._build_industry_mapping(basic_info)
         stock_name_industry = self._build_stock_name_industry_mapping(basic_info)
@@ -39,7 +57,7 @@ class MarketOverviewService:
             if market_df.empty:
                 raise
             logger.warning("市场实时行情已回退到本地缓存")
-        market_df["date"] = target_date
+        market_df["date"] = target_date.replace("-", "")
         market_df["代码"] = market_df["代码"].astype(str).str[-6:].str.zfill(6)
         market_df["行业"] = market_df.apply(
             lambda row: self._resolve_industry(
@@ -63,7 +81,7 @@ class MarketOverviewService:
 
         try:
             hot_df = self.source.fetch_xueqiu_hot()
-            hot_df["date"] = target_date
+            hot_df["date"] = target_date.replace("-", "")
             hot_df["股票代码"] = hot_df["股票代码"].astype(str).str[-6:].str.zfill(6)
             hot_df = hot_df.dropna(subset=[column for column in ("关注", "讨论", "交易") if column in hot_df.columns]).copy()
             hot_df["行业"] = hot_df.apply(
@@ -97,7 +115,7 @@ class MarketOverviewService:
             logger.warning("雪球热度抓取失败，尝试回退到本地缓存: %s", exc)
             hot_df = self._load_cached_hot_snapshot()
             if not hot_df.empty:
-                hot_df["date"] = target_date
+                hot_df["date"] = target_date.replace("-", "")
                 logger.warning("雪球热度已回退到本地缓存")
             else:
                 logger.warning("无可用热度缓存，本次跳过热度可视化数据")
@@ -128,9 +146,12 @@ class MarketOverviewService:
         )
         self.repository.save_bundle(bundle)
 
-        daily_json = self._write_json(MARKET_DATA_DIR / f"stock_daily_{target_date}.json", market_df.to_dict(orient="records"))
-        hot_json = self._write_json(MARKET_DATA_DIR / f"hot_daily_{target_date}.json", hot_df.to_dict(orient="records"))
-        viz_html = self._build_hot_visualization(target_date, hot_df)
+        # 文件名用无横线 YYYYMMDD（与回补脚本 emit_json 的约定一致），
+        # 数据库 trade_date 用带横线 YYYY-MM-DD（与历史 111 万行一致）。
+        compact_date = target_date.replace("-", "")
+        daily_json = self._write_json(MARKET_DATA_DIR / f"stock_daily_{compact_date}.json", market_df.to_dict(orient="records"))
+        hot_json = self._write_json(MARKET_DATA_DIR / f"hot_daily_{compact_date}.json", hot_df.to_dict(orient="records"))
+        viz_html = self._build_hot_visualization(compact_date, hot_df)
         return {
             "trade_date": target_date,
             "daily_json": str(daily_json),

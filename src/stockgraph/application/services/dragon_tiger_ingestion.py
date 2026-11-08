@@ -3,10 +3,7 @@ from datetime import datetime, timedelta
 
 from stockgraph.infrastructure.data_sources.dragon_tiger import (
     EastMoneyApiSource,
-    EastMoneyWebFallbackSource,
-    SinaFallbackSource,
-    StockApiFallbackSource,
-    TonghuashunFallbackSource,
+    EastMoneyDatacenterFallbackSource,
 )
 from stockgraph.infrastructure.db import DragonTigerRepository
 
@@ -14,14 +11,17 @@ logger = logging.getLogger(__name__)
 
 
 class DragonTigerIngestionService:
+    """龙虎榜抓取编排。
+
+    数据源链只保留真实来源：主源拿「上榜汇总 + 全市场席位明细」，
+    降级源只拿汇总。任何一级失败都不会伪造席位数据。
+    """
+
     def __init__(self, repository: DragonTigerRepository | None = None) -> None:
         self.repository = repository or DragonTigerRepository()
         self.sources = [
             EastMoneyApiSource(),
-            EastMoneyWebFallbackSource(),
-            SinaFallbackSource(),
-            TonghuashunFallbackSource(),
-            StockApiFallbackSource(),
+            EastMoneyDatacenterFallbackSource(),
         ]
 
     @staticmethod
@@ -44,7 +44,11 @@ class DragonTigerIngestionService:
 
         for source in self.sources:
             logger.info("尝试抓取数据源: %s", source.name)
-            batch = source.fetch(target_date)
+            try:
+                batch = source.fetch(target_date)
+            except Exception:  # noqa: BLE001
+                logger.warning("数据源异常，继续尝试下一个: %s", source.name, exc_info=True)
+                continue
             if batch:
                 logger.info("抓取成功: %s", source.name)
                 return self.repository.save_batch(batch)

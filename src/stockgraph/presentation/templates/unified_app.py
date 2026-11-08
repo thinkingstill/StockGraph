@@ -336,6 +336,21 @@ def render_unified_app() -> str:
       const fuzzy = options.find(s => s.code.toLowerCase().includes(lower) || s.name.includes(query));
       return fuzzy?.code || '';
     }
+    // WebGL 能力探测（结果缓存）。echarts-gl 在无 WebGL 环境下不会优雅报错，
+    // 而是在 addView 内部抛 `Cannot read properties of undefined (reading 'indexOf')`，
+    // 并连带触发 `clearColor` 空引用，最终整个模块变成空白。
+    let __webglSupported = null;
+    function webgl3dSupported() {
+      if (__webglSupported !== null) return __webglSupported;
+      try {
+        const canvas = document.createElement('canvas');
+        const gl = canvas.getContext('webgl2') || canvas.getContext('webgl') || canvas.getContext('experimental-webgl');
+        __webglSupported = !!(gl && typeof gl.getParameter === 'function');
+      } catch (e) {
+        __webglSupported = false;
+      }
+      return __webglSupported;
+    }
     async function fetchJson(path) {
       const res = await fetch(path, { cache: 'no-store' });
       if (!res.ok) throw new Error(`HTTP ${res.status}`);
@@ -674,13 +689,11 @@ def render_unified_app() -> str:
         document.getElementById('mh-exchange-count').textContent = exchanges.length;
         document.getElementById('mh-industry-count').textContent = industries.length;
       }
+      let lastFiltered = [];
+      function currentFiltered() { return lastFiltered; }
       function draw() {
         const range = selectedDateRange('mh', dates);
         records = flattenByDate(recordsByDate, range);
-        const xField = document.getElementById('mh-x').value;
-        const yField = document.getElementById('mh-y').value;
-        const zField = document.getElementById('mh-z').value;
-        const sizeField = document.getElementById('mh-size').value;
         const exchange = document.getElementById('mh-exchange').value;
         const industry = document.getElementById('mh-industry').value;
         const keywordInput = document.getElementById('mh-keyword').value.trim();
@@ -692,6 +705,7 @@ def render_unified_app() -> str:
           const matchKeyword = !keyword || (stockCode ? x.stock_code === stockCode : x.stock_code.toLowerCase().includes(keyword) || x.stock_name.toLowerCase().includes(keyword) || x.industry.toLowerCase().includes(keyword));
           return matchExchange && matchIndustry && matchKeyword;
         });
+        lastFiltered = filtered;
         document.getElementById('mh-date-v').textContent = dateRangeLabel(range);
         document.getElementById('mh-record-count').textContent = filtered.length;
         document.getElementById('mh-industry-count').textContent = new Set(filtered.map(x => x.industry)).size;
@@ -701,7 +715,31 @@ def render_unified_app() -> str:
           chart.clear();
           return;
         }
-        chart.setOption({
+        // 双保险：即使能力探测判断"有 WebGL"，echarts-gl 仍可能在运行期失败
+        // （驱动黑名单、上下文丢失等）。此时自动回落到 2D，绝不留白屏。
+        if (webgl3dSupported()) {
+          try {
+            chart.setOption(build3dOption(), true);
+            return;
+          } catch (e) {
+            console.warn('3D 渲染失败，已降级为 2D 气泡图：', e && e.message);
+            __webglSupported = false;
+          }
+        }
+        try {
+          chart.setOption(build2dFallbackOption(), true);
+        } catch (e) {
+          console.error('2D 降级渲染同样失败：', e && e.message);
+          chart.clear();
+        }
+      }
+      function build3dOption() {
+        const xField = document.getElementById('mh-x').value;
+        const yField = document.getElementById('mh-y').value;
+        const zField = document.getElementById('mh-z').value;
+        const sizeField = document.getElementById('mh-size').value;
+        const filtered = currentFiltered();
+        return {
           tooltip: {
             formatter: p => `${escapeHtml(p.data.stock_name)} (${escapeHtml(p.data.stock_code)})<br/>行业: ${escapeHtml(p.data.industry)}<br/>交易所: ${escapeHtml(p.data.exchange)}<br/>${escapeHtml(numericFields[xField])}: ${formatMetricValue(xField, p.data.raw[xField])}<br/>${escapeHtml(numericFields[yField])}: ${formatMetricValue(yField, p.data.raw[yField])}<br/>${escapeHtml(numericFields[zField])}: ${formatMetricValue(zField, p.data.raw[zField])}`,
           },
@@ -723,7 +761,55 @@ def render_unified_app() -> str:
             })),
             symbolSize: function (value, params) { return params.data.symbolSize || 12; },
           }]
-        }, true);
+        };
+      }
+      // 降级：无 WebGL（虚拟机、远程桌面、旧显卡、隐私模式）时 echarts-gl 会在
+      // addView 内部抛 `Cannot read properties of undefined (reading 'indexOf')`，
+      // 整个模块变空白。这里退化成 2D 气泡散点图，保留 X/Y 与颜色(Z)、大小(成交热度) 的语义。
+      function build2dFallbackOption() {
+        const xField = document.getElementById('mh-x').value;
+        const yField = document.getElementById('mh-y').value;
+        const zField = document.getElementById('mh-z').value;
+        const sizeField = document.getElementById('mh-size').value;
+        const filtered = currentFiltered();
+        const zValues = filtered.map(x => Number(x[zField] || 0));
+        return {
+          title: {
+            text: '当前环境不支持 WebGL，已降级为 2D 气泡图（X/Y/颜色/大小语义保持一致）',
+            left: 'center',
+            textStyle: { fontSize: 12, fontWeight: 'normal', color: '#b45309' },
+          },
+          tooltip: {
+            formatter: p => `${escapeHtml(p.data.stock_name)} (${escapeHtml(p.data.stock_code)})<br/>行业: ${escapeHtml(p.data.industry)}<br/>交易所: ${escapeHtml(p.data.exchange)}<br/>${escapeHtml(numericFields[xField])}: ${formatMetricValue(xField, p.data.raw[xField])}<br/>${escapeHtml(numericFields[yField])}: ${formatMetricValue(yField, p.data.raw[yField])}<br/>${escapeHtml(numericFields[zField])}: ${formatMetricValue(zField, p.data.raw[zField])}`,
+          },
+          grid: { left: 70, right: 30, top: 60, bottom: 70 },
+          visualMap: {
+            dimension: 2,
+            min: Math.min(...zValues, 0),
+            max: Math.max(...zValues, 1),
+            calculable: true,
+            orient: 'horizontal',
+            left: 'center',
+            bottom: 0,
+            text: [numericFields[zField] || zField, ''],
+          },
+          xAxis: { name: numericFields[xField] || xField, nameLocation: 'middle', nameGap: 28, type: 'value', scale: true },
+          yAxis: { name: numericFields[yField] || yField, nameLocation: 'middle', nameGap: 42, type: 'value', scale: true },
+          series: [{
+            type: 'scatter',
+            data: filtered.map(x => ({
+              value: [Number(x[xField] || 0), Number(x[yField] || 0), Number(x[zField] || 0)],
+              raw: x,
+              stock_name: x.stock_name,
+              stock_code: x.stock_code,
+              industry: x.industry,
+              exchange: x.exchange,
+              symbolSize: Math.max(6, Math.min(22, Number(x[sizeField] || 0) / 6 + 6)),
+            })),
+            symbolSize: function (value, params) { return params.data.symbolSize || 10; },
+            itemStyle: { opacity: 0.72 },
+          }]
+        };
       }
       ['mh-start','mh-end'].forEach(id => document.getElementById(id).addEventListener('change', () => { fillMarketHotFilters(); draw(); }));
       document.getElementById('mh-run').addEventListener('click', draw);
@@ -1715,42 +1801,50 @@ def render_unified_app() -> str:
         <div class="grid">
           <div class="card split-2"><div id="mi-top" class="chart" style="min-height:360px;"></div></div>
           <div class="card split-2"><div id="mi-bottom" class="chart" style="min-height:360px;"></div></div>
-          <div class="card"><table><thead><tr><th>行业</th><th>股票数</th><th>平均涨跌幅</th><th>总涨跌幅</th></tr></thead><tbody id="mi-table"></tbody></table></div>
+          <div class="card"><table><thead><tr><th>行业</th><th>股票数</th><th>日均涨跌幅</th><th>区间累计涨跌幅</th></tr></thead><tbody id="mi-table"></tbody></table></div>
         </div>`;
       const topChart = echarts.init(document.getElementById('mi-top'));
       const bottomChart = echarts.init(document.getElementById('mi-bottom'));
       function aggregateIndustryRange(range) {
+        // 注意：后端 total_change_pct 是「当日该行业所有成分股涨跌幅之和」，
+        // 直接拿来排序/画图会得到一个几百上千的伪数值（100 只股票各涨 1% 就是 100）。
+        // 榜单必须用平均涨跌幅；跨多日时把每日均值累加成「区间累计涨跌幅」。
         const grouped = new Map();
         range.forEach(date => (recordsByDate[date] || []).forEach(row => {
-          const item = grouped.get(row.industry) || { industry: row.industry, stock_count: 0, total_change_pct: 0, weighted_change: 0, days: 0 };
-          item.stock_count += Number(row.stock_count || 0);
-          item.total_change_pct += Number(row.total_change_pct || 0);
-          item.weighted_change += Number(row.avg_change_pct || 0) * Number(row.stock_count || 0);
+          const count = Number(row.stock_count || 0);
+          const avg = Number(row.avg_change_pct || 0);
+          const item = grouped.get(row.industry) || { industry: row.industry, stock_count: 0, cum_change_pct: 0, weighted_change: 0, days: 0 };
+          item.stock_count += count;
+          item.cum_change_pct += avg;
+          item.weighted_change += avg * count;
           item.days += 1;
           grouped.set(row.industry, item);
         }));
         return Array.from(grouped.values()).map(x => ({
           industry: x.industry,
           stock_count: x.days ? Math.round(x.stock_count / x.days) : 0,
-          total_change_pct: x.total_change_pct,
+          // 单日即当日行业均值；多日即各日均值之和，等价于区间累计涨跌幅
+          changepct: x.cum_change_pct,
           avg_change_pct: x.stock_count ? x.weighted_change / x.stock_count : 0,
-        })).sort((a,b) => b.total_change_pct - a.total_change_pct);
+          days: x.days,
+        })).sort((a,b) => b.changepct - a.changepct);
       }
       function draw() {
         const range = selectedDateRange('mi', dates);
         records = aggregateIndustryRange(range);
         const top = records.slice(0, 12);
         const bottom = records.slice(-12);
+        const multiDay = range.length > 1;
         document.getElementById('mi-date-v').textContent = dateRangeLabel(range);
         document.getElementById('mi-count-v').textContent = records.length;
-        document.getElementById('mi-table').innerHTML = records.map(x => `<tr><td>${escapeHtml(x.industry)}</td><td>${x.stock_count}</td><td class="${Number(x.avg_change_pct) >= 0 ? 'buy' : 'sell'}">${Number(x.avg_change_pct).toFixed(2)}%</td><td class="${Number(x.total_change_pct) >= 0 ? 'buy' : 'sell'}">${Number(x.total_change_pct).toFixed(2)}%</td></tr>`).join('');
+        document.getElementById('mi-table').innerHTML = records.map(x => `<tr><td>${escapeHtml(x.industry)}</td><td>${x.stock_count}</td><td class="${Number(x.avg_change_pct) >= 0 ? 'buy' : 'sell'}">${Number(x.avg_change_pct).toFixed(2)}%</td><td class="${Number(x.changepct) >= 0 ? 'buy' : 'sell'}">${Number(x.changepct).toFixed(2)}%</td></tr>`).join('');
         topChart.setOption({
-          xAxis: { type: 'value' }, yAxis: { type: 'category', data: top.map(x => x.industry) },
-          series: [{ type: 'bar', data: top.map(x => x.total_change_pct), itemStyle: { color: '#0f766e' } }]
+          xAxis: { type: 'value', name: multiDay ? '区间累计涨跌幅(%)' : '平均涨跌幅(%)' }, yAxis: { type: 'category', data: top.map(x => x.industry) },
+          series: [{ type: 'bar', data: top.map(x => Number(x.changepct.toFixed(4))), itemStyle: { color: '#0f766e' } }]
         }, true);
         bottomChart.setOption({
-          xAxis: { type: 'value' }, yAxis: { type: 'category', data: bottom.map(x => x.industry) },
-          series: [{ type: 'bar', data: bottom.map(x => x.total_change_pct), itemStyle: { color: '#b45309' } }]
+          xAxis: { type: 'value', name: multiDay ? '区间累计涨跌幅(%)' : '平均涨跌幅(%)' }, yAxis: { type: 'category', data: bottom.map(x => x.industry) },
+          series: [{ type: 'bar', data: bottom.map(x => Number(x.changepct.toFixed(4))), itemStyle: { color: '#b45309' } }]
         }, true);
       }
       ['mi-start','mi-end'].forEach(id => document.getElementById(id).addEventListener('change', draw));

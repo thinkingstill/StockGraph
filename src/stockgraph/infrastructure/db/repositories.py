@@ -3,6 +3,7 @@ import json
 import shutil
 from dataclasses import asdict
 from datetime import datetime
+from typing import TYPE_CHECKING
 
 from stockgraph.core.paths import SOURCE_DIR
 from stockgraph.domain.dragon_tiger import DragonTigerBatch, detect_seat_type, match_trader
@@ -11,6 +12,9 @@ from stockgraph.domain.market_overview import IndustryRanking, MarketOverviewBun
 from stockgraph.domain.news import NewsBatch
 from stockgraph.infrastructure.db.connection import database_path, get_connection
 from stockgraph.infrastructure.db.schema import SCHEMA_SQL
+
+if TYPE_CHECKING:
+    from stockgraph.infrastructure.graph.base import GraphStore
 
 logger = logging.getLogger(__name__)
 
@@ -341,6 +345,61 @@ class NewsRepository:
             conn.commit()
         return inserted
 
+    def query_news_grouped_by_stock(
+        self, limit_per_stock: int = 20, max_stocks: int = 600
+    ) -> dict[str, list[dict]]:
+        """一次查询拿到「每只股票最近 N 条新闻」。
+
+        前端构建原先对每只股票各调一次 `query_news_by_stock`，该方法内部含
+        `metadata_json LIKE '%code%'` 全表扫描；新闻量从 246 条涨到 33 万条后，
+        6000+ 只股票 × 2 次查询直接把构建拖到几十分钟跑不完。
+        这里用一条带窗口函数的 SQL 完成分组取前 N 条。
+
+        返回 `{stock_code: [article, ...]}`，按新闻条数降序只保留前 max_stocks 只股票。
+        """
+        with get_connection() as conn:
+            rows = conn.execute(
+                """
+                WITH ranked AS (
+                    SELECT ne.entity_code AS code,
+                           na.id, na.source, na.title, na.content, na.summary,
+                           na.published_at, na.url, na.sentiment, na.event_type,
+                           na.metadata_json,
+                           ROW_NUMBER() OVER (
+                               PARTITION BY ne.entity_code ORDER BY na.published_at DESC
+                           ) AS rn
+                    FROM news_entities ne
+                    INNER JOIN news_articles na ON na.id = ne.article_id
+                    WHERE ne.entity_type = 'stock'
+                )
+                SELECT * FROM ranked WHERE rn <= ?
+                """,
+                (max(1, int(limit_per_stock)),),
+            ).fetchall()
+
+        grouped: dict[str, list[dict]] = {}
+        for row in rows:
+            grouped.setdefault(row["code"], []).append(
+                {
+                    "id": row["id"],
+                    "stock_code": row["code"],
+                    "source": row["source"],
+                    "title": row["title"],
+                    "content": row["content"],
+                    "summary": row["summary"],
+                    "published_at": row["published_at"],
+                    "url": row["url"],
+                    "sentiment": row["sentiment"],
+                    "event_type": row["event_type"],
+                    "metadata_json": row["metadata_json"],
+                }
+            )
+        # 新闻多的股票更有展示价值
+        ordered = dict(
+            sorted(grouped.items(), key=lambda item: len(item[1]), reverse=True)[: max(1, max_stocks)]
+        )
+        return ordered
+
     def query_news_by_stock(self, stock_code: str, limit: int = 30) -> list[dict]:
         """查询与指定股票相关的新闻，优先通过实体关联，其次通过 metadata 中的 stock_code。"""
         with get_connection() as conn:
@@ -488,65 +547,83 @@ class NewsRepository:
 
 
 class GraphRepository:
+    """向后兼容层：真正的图写入交给配置选定的后端（SQLite / FalkorDB）。
+
+    历史代码里到处 `GraphRepository().save_snapshot(...)`，保留这个类可以避免大范围改动，
+    同时让「一键切换图后端」对既有调用路径同样生效。
+    """
+
+    def __init__(self, store: "GraphStore | None" = None) -> None:
+        self._store = store
+
+    @property
+    def store(self) -> "GraphStore":
+        if self._store is None:
+            from stockgraph.infrastructure.graph import create_graph_store
+
+            self._store = create_graph_store()
+        return self._store
+
     def initialize_database(self) -> None:
-        with get_connection() as conn:
-            conn.executescript(SCHEMA_SQL)
+        self.store.initialize()
 
     def save_snapshot(self, snapshot: GraphSnapshot) -> int:
-        self.initialize_database()
-        with get_connection() as conn:
-            cursor = conn.cursor()
-            cursor.execute(
-                """
-                INSERT OR IGNORE INTO graph_snapshots
-                (snapshot_date, snapshot_type, version, metadata_json)
-                VALUES (?, ?, ?, ?)
-                """,
-                (
-                    snapshot.snapshot_date,
-                    snapshot.snapshot_type,
-                    snapshot.version,
-                    json.dumps(snapshot.metadata, ensure_ascii=False),
-                ),
-            )
-            cursor.execute(
-                "DELETE FROM graph_edges WHERE snapshot_type = ? AND trade_date = ?",
-                (snapshot.snapshot_type, snapshot.snapshot_date),
-            )
-            for node in snapshot.nodes:
-                cursor.execute(
-                    """
-                    INSERT OR REPLACE INTO graph_nodes
-                    (node_id, node_type, node_key, node_name, attributes_json)
-                    VALUES (?, ?, ?, ?, ?)
-                    """,
-                    (
-                        node.node_id,
-                        node.node_type,
-                        node.node_key,
-                        node.node_name,
-                        json.dumps(node.attributes, ensure_ascii=False),
-                    ),
-                )
-            for edge in snapshot.edges:
-                cursor.execute(
-                    """
-                    INSERT INTO graph_edges
-                    (source_node_id, target_node_id, edge_type, weight, trade_date, snapshot_type, attributes_json)
-                    VALUES (?, ?, ?, ?, ?, ?, ?)
-                    """,
-                    (
-                        edge.source_node_id,
-                        edge.target_node_id,
-                        edge.edge_type,
-                        edge.weight,
-                        edge.trade_date,
-                        snapshot.snapshot_type,
-                        json.dumps(edge.attributes, ensure_ascii=False),
-                    ),
-                )
-            conn.commit()
-        return len(snapshot.edges)
+        return self.store.save_snapshot(snapshot)
+
+    # ---- 以下为对 GraphStore 协议的完整委托，避免上层绕过抽象层 ----
+
+    def list_snapshots(self) -> list[dict]:
+        return self.store.list_snapshots()
+
+    def load_snapshot(self, snapshot_type: str, snapshot_date: str):
+        return self.store.load_snapshot(snapshot_type, snapshot_date)
+
+    def delete_snapshot(self, snapshot_type: str, snapshot_date: str) -> int:
+        return self.store.delete_snapshot(snapshot_type, snapshot_date)
+
+    def snapshot_stats(self, snapshot_type: str, snapshot_date: str) -> dict:
+        return self.store.snapshot_stats(snapshot_type, snapshot_date)
+
+    def fetch_edges(self, snapshot_type: str, snapshot_date: str) -> list[dict]:
+        return self.store.fetch_edges(snapshot_type, snapshot_date)
+
+    def top_nodes(
+        self, snapshot_type: str, snapshot_date: str, limit: int = 20, node_type: str | None = None
+    ) -> list[dict]:
+        return self.store.top_nodes(snapshot_type, snapshot_date, limit=limit, node_type=node_type)
+
+    def neighbors(self, node_id: str, limit: int = 50, snapshot_type: str | None = None) -> dict:
+        return self.store.neighbors(node_id, limit=limit, snapshot_type=snapshot_type)
+
+    def shortest_path(
+        self, source_node_id: str, target_node_id: str, max_depth: int = 4, snapshot_type: str | None = None
+    ) -> dict:
+        return self.store.shortest_path(
+            source_node_id, target_node_id, max_depth=max_depth, snapshot_type=snapshot_type
+        )
+
+    def pagerank(
+        self, snapshot_type: str, snapshot_date: str, *, damping: float = 0.85, iterations: int = 40, limit: int = 20
+    ) -> list[dict]:
+        return self.store.pagerank(
+            snapshot_type, snapshot_date, damping=damping, iterations=iterations, limit=limit
+        )
+
+    def communities(
+        self,
+        snapshot_type: str,
+        snapshot_date: str,
+        *,
+        max_iterations: int = 30,
+        min_size: int = 2,
+        limit: int = 20,
+    ) -> list[dict]:
+        return self.store.communities(
+            snapshot_type, snapshot_date, max_iterations=max_iterations, min_size=min_size, limit=limit
+        )
+
+    def node_names(self, node_ids: list[str]) -> dict[str, str]:
+        return self.store.node_names(node_ids)
 
 
 class MarketOverviewRepository:
