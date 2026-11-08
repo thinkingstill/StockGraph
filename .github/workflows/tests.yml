@@ -40,12 +40,13 @@ jobs:
           python-version: ${{ matrix.python-version }}
           cache: pip
 
-      - name: Install minimal test dependencies
+      - name: Install package and dev dependencies
         run: |
           python -m pip install --upgrade pip
-          # 测试只覆盖纯标准库可跑的部分（图算法、实体识别、数据源解析），
-          # 不装 akshare/pandas 以免引入与业务无关的脆弱依赖。
-          python -m pip install pytest
+          # akshare 在 market_overview 服务的导入链上（源适配器在模块级 import），
+          # 因此无法通过裁剪依赖来跳过，只能装全量。setup-python 的 pip cache
+          # 已能让重复安装走缓存。
+          python -m pip install -e ".[dev]"
 
       - name: Run tests
         env:
