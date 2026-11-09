@@ -57,10 +57,15 @@ on:
   push:
     branches:
       - main
-    # 数据/产物/文档类提交不触发 Pages 重建，避免 bot 提交自激循环
+    # 数据/产物/文档类提交不触发 Pages 重建，避免 bot 提交自激循环。
+    # 前端产物（index.html / 静态资源）不做忽略：前端更新必须能上线。
     paths-ignore:
       - "data/**"
-      - "outputs/**"
+      - "outputs/app/data/**"
+      - "outputs/html/**"
+      - "outputs/market/**"
+      - "outputs/dragon_tiger/**"
+      - "outputs/*.html"
       - "docs/**"
       - "**.md"
   schedule:
