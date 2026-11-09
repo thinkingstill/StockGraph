@@ -430,15 +430,30 @@
       list.push(rel);           // 同源兜底
       return list;
     }
-    async function fetchShardWithFallback(rel) {
+    // 单分片超时：CDN 首次回源或网络抖动时可能长时间挂起，
+    // 没有超时会让整批 Promise.all 卡死，页面停在"正在加载"。
+    const SHARD_TIMEOUT_MS = 10000;
+    async function fetchWithTimeout(url, ms) {
+      const ctrl = new AbortController();
+      const timer = setTimeout(() => ctrl.abort(), ms);
+      try {
+        const res = await fetch(url, { signal: ctrl.signal });
+        if (!res.ok) throw new Error('HTTP ' + res.status);
+        return await res.json();
+      } finally {
+        clearTimeout(timer);
+      }
+    }
+    async function fetchShardWithFallback(rel, attempts) {
       const urls = shardUrls(rel);
+      const tries = attempts || 1;
       let lastErr = null;
-      for (const u of urls) {
-        try {
-          const res = await fetch(u);
-          if (!res.ok) throw new Error('HTTP ' + res.status);
-          return await res.json();
-        } catch (e) { lastErr = e; }
+      for (let n = 0; n < tries; n++) {
+        for (const u of urls) {
+          try {
+            return await fetchWithTimeout(u, SHARD_TIMEOUT_MS);
+          } catch (e) { lastErr = e; }
+        }
       }
       throw lastErr || new Error('分片加载失败');
     }
@@ -503,16 +518,20 @@
         return payload;
       }
 
-      // 判断分片是否"打包"（一个分片内含多个 key）
-      const packed = keys.some(k => false);  // 占位，实际按首次拉取内容判断
+      // 打包分片（一个分片内含多个 key）会自动展开进缓存，由 makeShardProxy 处理
       const holder = makeShardProxy(shardIndex, { packed: true });
       payload[field] = holder.proxy;
       payload.__shardFetch = holder.fetchShard;
 
-      // 预取首屏真正需要的分片（默认最新日期及其所在打包片）
+      // 预取首屏真正需要的分片。单个分片失败不应阻塞整页：
+      // 失败时渲染层读到 undefined 会走各自的空数据兜底。
       const eager = (eagerKeys && eagerKeys.length ? eagerKeys : keys.slice(0, 1));
       let done = 0;
-      await Promise.all(eager.map(async k => { await holder.fetchShard(k); done++; if (onProgress) onProgress(done, eager.length); }));
+      await Promise.all(eager.map(async k => {
+        await holder.fetchShard(k);
+        done++;
+        if (onProgress) onProgress(done, eager.length);
+      }));
       return payload;
     }
 
