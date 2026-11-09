@@ -418,7 +418,8 @@
       const field = payload.shard_field || 'graphs';
       const keys = Object.keys(shardIndex);
       if (!keys.length) return payload;
-      const merged = {};
+      const listMode = payload.shard_mode === 'list';
+      const merged = listMode ? [] : {};
       const CONCURRENCY = 8;
       let done = 0;
       for (let i = 0; i < keys.length; i += CONCURRENCY) {
@@ -432,8 +433,14 @@
             }
           })
         );
+        // 列表分片按 index 顺序拼接，保证顺序稳定
+        results.sort((a, b) => a[0].localeCompare(b[0]));
         results.forEach(([k, v]) => {
           if (v === null) return;
+          if (listMode) {
+            if (Array.isArray(v)) merged.push(...v);
+            return;
+          }
           // 分片可能是「多日期打包的字典」，也可能是「单日期对象」。
           // 打包分片的特征是：它是字典，且 key 与主索引里的 key 对得上。
           if (v && typeof v === 'object' && !Array.isArray(v)) {
@@ -480,10 +487,16 @@
         let newsPayload = { stock_codes: [], stock_summaries: [], stock_news: {}, total_articles: 0 };
         let aiPayload = { stock_codes: [], stock_names: {}, stock_contexts: {} };
         try {
-          if (newsSection && newsSection.available) newsPayload = await fetchJson(newsSection.path);
+          if (newsSection && newsSection.available) {
+            newsPayload = await fetchJson(newsSection.path);
+            if (newsSection.sharded) await hydrateShards(newsSection, newsPayload);
+          }
         } catch (e) { /* ignore */ }
         try {
-          if (aiSection && aiSection.available) aiPayload = await fetchJson(aiSection.path);
+          if (aiSection && aiSection.available) {
+            aiPayload = await fetchJson(aiSection.path);
+            if (aiSection.sharded) await hydrateShards(aiSection, aiPayload);
+          }
         } catch (e) { /* ignore */ }
         renderSmartAnalysis(root, { news: newsPayload, ai: aiPayload });
         state.loaded[name] = true;
