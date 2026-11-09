@@ -419,6 +419,31 @@ def render_unified_app() -> str:
     // 60 天 67MB，全量预载在 GitHub Pages 上要几分钟，页面表现为"卡死"。
     // 改为用 Proxy 代理数据字典：渲染层读 graphs[date] 时才去拉那一天的分片，
     // 首屏只需要紧邻的少数几片。
+    // 分片走 jsDelivr CDN：同一文件实测 jsDelivr 约 1.1MB/s，而直连 Pages
+    // 在部分网络只有 ~15KB/s（相差 60 倍以上）。仓库已公开，分片路径稳定，
+    // 因此优先 CDN；CDN 失败时自动回退到页面同源的 ./data/shards/ 路径。
+    const SHARD_CDN_BASE = 'https://cdn.jsdelivr.net/gh/thinkingstill/StockGraph@main/outputs/app/';
+    function shardUrls(rel) {
+      // rel 形如 ./data/shards/<module>/<file>.json
+      const clean = String(rel || '').replace(/^\.\//, '');
+      const list = [];
+      if (clean) list.push(SHARD_CDN_BASE + clean);
+      list.push(rel);           // 同源兜底
+      return list;
+    }
+    async function fetchShardWithFallback(rel) {
+      const urls = shardUrls(rel);
+      let lastErr = null;
+      for (const u of urls) {
+        try {
+          const res = await fetch(u);
+          if (!res.ok) throw new Error('HTTP ' + res.status);
+          return await res.json();
+        } catch (e) { lastErr = e; }
+      }
+      throw lastErr || new Error('分片加载失败');
+    }
+
     function makeShardProxy(shardIndex, opts) {
       const cache = {};
       const pending = {};
@@ -427,7 +452,7 @@ def render_unified_app() -> str:
         if (pending[key]) return pending[key];
         const url = shardIndex[key];
         if (!url) return Promise.resolve(undefined);
-        pending[key] = fetchJson(url)
+        pending[key] = fetchShardWithFallback(url)
           .then(v => {
             if (opts && opts.packed && v && typeof v === 'object' && !Array.isArray(v)) {
               // 打包分片：内容是 {date: value} 字典，展开进缓存
@@ -468,7 +493,7 @@ def render_unified_app() -> str:
         for (let i = 0; i < keys.length; i += CONCURRENCY) {
           const batch = keys.slice(i, i + CONCURRENCY);
           const results = await Promise.all(batch.map(async k => {
-            try { return [k, await fetchJson(shardIndex[k])]; } catch (e) { return [k, null]; }
+            try { return [k, await fetchShardWithFallback(shardIndex[k])]; } catch (e) { return [k, null]; }
           }));
           results.sort((a, b) => a[0].localeCompare(b[0]));
           results.forEach(([, v]) => { if (Array.isArray(v)) merged.push(...v); });
