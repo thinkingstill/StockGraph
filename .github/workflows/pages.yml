@@ -242,6 +242,12 @@ jobs:
             exit 1
           fi
 
+      # manifest 与主索引必须同步：主索引分片了但 manifest 没标记 sharded，
+      # 前端不会加载分片，模块会静默渲染空白（HTTP 全 200，极难发现）。
+      - name: Check artifact consistency
+        if: steps.sync.outputs.should_deploy == 'true'
+        run: python scripts/check_artifact_consistency.py
+
       - name: Upload Pages artifact
         if: steps.sync.outputs.should_deploy == 'true'
         uses: actions/upload-pages-artifact@v4
@@ -301,6 +307,9 @@ jobs:
             echo "$BIG"
             exit 1
           fi
+
+      - name: Check artifact consistency
+        run: python scripts/check_artifact_consistency.py
 
       - name: Upload Pages artifact
         uses: actions/upload-pages-artifact@v4
