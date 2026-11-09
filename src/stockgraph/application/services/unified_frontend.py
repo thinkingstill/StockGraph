@@ -1288,6 +1288,11 @@ class UnifiedFrontendService:
     # 也避免前端一次拉取上百 MB 卡死。
     SECTION_SHARD_THRESHOLD_BYTES = 10 * 1024 * 1024
 
+    # 每个分片的目标字节数。分片太细会导致请求数爆炸：dragon_tiger_query 按
+    # 单日期切分曾产生 203 个 93KB 分片，HTTP/2 下前端要 3 分钟才能加载完，
+    # 表现就是"页面卡死"。改为把相邻日期打包进同一分片，把分片数压到个位数。
+    SECTION_SHARD_TARGET_BYTES = 4 * 1024 * 1024
+
     # 可按日期切分的字典字段：{字段名: 日期列表字段名}
     _DATE_KEYED_FIELDS = {
         "graphs": "date_list",
@@ -1312,11 +1317,15 @@ class UnifiedFrontendService:
 
         shard_spec = cls._detect_shard_field(payload)
         if shard_spec is None:
-            # 无法按日期拆分（结构不符合预期），只能整体写出
+            # 无法按日期拆分，尝试按列表分块（如 records 是几万条的大列表）
+            list_spec = cls._largest_list_field(payload)
+            if list_spec is not None:
+                return cls._write_list_shards(filename, payload, list_spec, raw)
+            # 结构完全不符合预期，只能整体写出
             path = APP_DATA_DIR / filename
             path.write_text(raw, encoding="utf-8")
             logger.warning(
-                "%s 体积 %.1fMB 超过阈值但无法按日期拆分，仍整体写出",
+                "%s 体积 %.1fMB 超过阈值但无法拆分，仍整体写出",
                 filename,
                 len(raw.encode("utf-8")) / 1024 / 1024,
             )
@@ -1328,14 +1337,30 @@ class UnifiedFrontendService:
         shard_dir = APP_DATA_DIR / "shards" / section
         shard_dir.mkdir(parents=True, exist_ok=True)
 
+        # 把相邻日期打包进同一分片：按累计字节数分组，每组约 TARGET 大小。
+        # 单日期自身超级大的，独占一片也可以接受。
+        groups: list[tuple[str, dict]] = []
+        current: dict = {}
+        current_bytes = 0
+        target = cls.SECTION_SHARD_TARGET_BYTES
+        for key, value in by_date.items():
+            vbytes = len(json.dumps(value, ensure_ascii=False, default=str).encode("utf-8"))
+            if current and current_bytes + vbytes > target:
+                groups.append((list(current.keys())[0], current))
+                current, current_bytes = {}, 0
+            current[str(key)] = value
+            current_bytes += vbytes
+        if current:
+            groups.append((list(current.keys())[0], current))
+
         shard_index: dict[str, str] = {}
         written = 0
-        for key, value in by_date.items():
-            shard_path = shard_dir / f"{key}.json"
+        for group_name, group in groups:
+            shard_path = shard_dir / f"{group_name}.json"
             shard_path.write_text(
-                json.dumps(value, ensure_ascii=False, default=str), encoding="utf-8"
+                json.dumps(group, ensure_ascii=False, default=str), encoding="utf-8"
             )
-            shard_index[str(key)] = f"./data/shards/{section}/{key}.json"
+            shard_index[group_name] = f"./data/shards/{section}/{group_name}.json"
             written += 1
 
         sharded_payload = dict(payload)
@@ -1376,6 +1401,81 @@ class UnifiedFrontendService:
                 if isinstance(value, dict) and value and field not in ("shard_index",):
                     return field, "date_list"
         return None
+
+    @staticmethod
+    def _largest_list_field(payload: dict) -> tuple[str, list] | None:
+        """找出 payload 中最大的列表字段，作为列表分片的候选。
+
+        像 dragon_tiger_graph 这种 `records` 是 list（6 万条）的模块，
+        无法按日期切分，只能按条数切成等份。GitHub Pages 对 10MB+ 的单文件
+        分发极不稳定（实测会挂起），必须切小。
+        """
+        best: tuple[str, list] | None = None
+        best_bytes = 0
+        for field, value in payload.items():
+            if not isinstance(value, list) or not value:
+                continue
+            size = len(json.dumps(value, ensure_ascii=False, default=str).encode("utf-8"))
+            if size > best_bytes:
+                best, best_bytes = (field, value), size
+        return best
+
+    @staticmethod
+    def _write_list_shards(
+        filename: str, payload: dict, list_spec: tuple[str, list], raw: str
+    ) -> dict:
+        """把大列表切成等份分片。
+
+        主文件保留全部元数据，目标列表被替换为空列表，shard_index 用序号做 key
+        指向各分片；前端按 shard_mode="list" 顺序 concat 还原。
+        """
+        field, values = list_spec
+        section = Path(filename).stem
+        shard_dir = APP_DATA_DIR / "shards" / section
+        shard_dir.mkdir(parents=True, exist_ok=True)
+
+        target = UnifiedFrontendService.SECTION_SHARD_TARGET_BYTES
+        total_bytes = len(json.dumps(values, ensure_ascii=False, default=str).encode("utf-8"))
+        per_item = max(total_bytes / max(len(values), 1), 1)
+        chunk_size = max(int(target / per_item), 1)
+
+        shard_index: dict[str, str] = {}
+        written = 0
+        for start in range(0, len(values), chunk_size):
+            chunk = values[start : start + chunk_size]
+            name = f"part-{written:03d}"
+            (shard_dir / f"{name}.json").write_text(
+                json.dumps(chunk, ensure_ascii=False, default=str), encoding="utf-8"
+            )
+            shard_index[name] = f"./data/shards/{section}/{name}.json"
+            written += 1
+
+        sharded_payload = dict(payload)
+        sharded_payload[field] = []
+        sharded_payload["shard_field"] = field
+        sharded_payload["shard_index"] = shard_index
+        sharded_payload["shard_mode"] = "list"
+        path = APP_DATA_DIR / filename
+        path.write_text(
+            json.dumps(sharded_payload, ensure_ascii=False, default=str), encoding="utf-8"
+        )
+        logger.info(
+            "%s 已按列表分片：%d 片（每片约 %d 条），主索引 %.1fKB（原 %.1fMB）",
+            filename,
+            written,
+            chunk_size,
+            path.stat().st_size / 1024,
+            len(raw.encode("utf-8")) / 1024 / 1024,
+        )
+        return {
+            "available": True,
+            "path": f"./data/{filename}",
+            "message": "",
+            "sharded": True,
+            "shard_field": field,
+            "shard_mode": "list",
+            "shard_count": written,
+        }
 
     @staticmethod
     def _copy_static_assets() -> None:

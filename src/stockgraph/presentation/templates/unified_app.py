@@ -412,31 +412,83 @@ def render_unified_app() -> str:
         document.getElementById('manifestStatus').textContent = `数据清单加载失败: ${e.message}`;
       }
     }
-    // 分片模块：主文件只带索引，按索引并发拉取分片后原地合并回 payload。
-    // 合并后结构与非分片版本完全一致，渲染层无需感知分片。
-    async function hydrateShards(section, payload) {
+    // 分片模块：主文件只带索引，按需拉取。合并后结构与未分片时完全一致，
+    // 渲染层无需感知分片。
+    //
+    // 为什么不一次性全量预载：stock_super_graph 25 天共 123MB、china_city_bubble
+    // 60 天 67MB，全量预载在 GitHub Pages 上要几分钟，页面表现为"卡死"。
+    // 改为用 Proxy 代理数据字典：渲染层读 graphs[date] 时才去拉那一天的分片，
+    // 首屏只需要紧邻的少数几片。
+    function makeShardProxy(shardIndex, opts) {
+      const cache = {};
+      const pending = {};
+      const fetchShard = (key) => {
+        if (key in cache) return Promise.resolve(cache[key]);
+        if (pending[key]) return pending[key];
+        const url = shardIndex[key];
+        if (!url) return Promise.resolve(undefined);
+        pending[key] = fetchJson(url)
+          .then(v => {
+            if (opts && opts.packed && v && typeof v === 'object' && !Array.isArray(v)) {
+              // 打包分片：内容是 {date: value} 字典，展开进缓存
+              Object.keys(v).forEach(k => { cache[k] = v[k]; });
+            } else {
+              cache[key] = v;
+            }
+            delete pending[key];
+            return cache[key];
+          })
+          .catch(e => { delete pending[key]; return undefined; });
+        return pending[key];
+      };
+      return { proxy: new Proxy({}, {
+        get(_, k) {
+          if (typeof k !== 'string') return undefined;
+          if (k in cache) return cache[k];
+          fetchShard(k);
+          return undefined;   // 未就绪时返回 undefined，渲染层已有兜底默认值
+        },
+        has(_, k) { return k in shardIndex || k in cache; },
+        ownKeys() { return Object.keys(cache); },
+        getOwnPropertyDescriptor() { return { enumerable: true, configurable: true }; },
+      }), fetchShard, cache, pending };
+    }
+
+    async function hydrateShards(section, payload, onProgress, eagerKeys) {
       const shardIndex = payload.shard_index || {};
       const field = payload.shard_field || 'graphs';
       const keys = Object.keys(shardIndex);
       if (!keys.length) return payload;
-      const merged = {};
-      const CONCURRENCY = 8;
-      for (let i = 0; i < keys.length; i += CONCURRENCY) {
-        const batch = keys.slice(i, i + CONCURRENCY);
-        const results = await Promise.all(
-          batch.map(async (k) => {
-            try {
-              return [k, await fetchJson(shardIndex[k])];
-            } catch (e) {
-              return [k, null];
-            }
-          })
-        );
-        results.forEach(([k, v]) => {
-          if (v !== null) merged[k] = v;
-        });
+
+      // 列表模式（records 这类大数组）无法按需切片，仍然一次性拼接
+      if (payload.shard_mode === 'list') {
+        const merged = [];
+        const CONCURRENCY = 6;
+        let done = 0;
+        for (let i = 0; i < keys.length; i += CONCURRENCY) {
+          const batch = keys.slice(i, i + CONCURRENCY);
+          const results = await Promise.all(batch.map(async k => {
+            try { return [k, await fetchJson(shardIndex[k])]; } catch (e) { return [k, null]; }
+          }));
+          results.sort((a, b) => a[0].localeCompare(b[0]));
+          results.forEach(([, v]) => { if (Array.isArray(v)) merged.push(...v); });
+          done += batch.length;
+          if (onProgress) onProgress(done, keys.length);
+        }
+        payload[field] = merged;
+        return payload;
       }
-      payload[field] = merged;
+
+      // 判断分片是否"打包"（一个分片内含多个 key）
+      const packed = keys.some(k => false);  // 占位，实际按首次拉取内容判断
+      const holder = makeShardProxy(shardIndex, { packed: true });
+      payload[field] = holder.proxy;
+      payload.__shardFetch = holder.fetchShard;
+
+      // 预取首屏真正需要的分片（默认最新日期及其所在打包片）
+      const eager = (eagerKeys && eagerKeys.length ? eagerKeys : keys.slice(0, 1));
+      let done = 0;
+      await Promise.all(eager.map(async k => { await holder.fetchShard(k); done++; if (onProgress) onProgress(done, eager.length); }));
       return payload;
     }
 
@@ -470,10 +522,16 @@ def render_unified_app() -> str:
         let newsPayload = { stock_codes: [], stock_summaries: [], stock_news: {}, total_articles: 0 };
         let aiPayload = { stock_codes: [], stock_names: {}, stock_contexts: {} };
         try {
-          if (newsSection && newsSection.available) newsPayload = await fetchJson(newsSection.path);
+          if (newsSection && newsSection.available) {
+            newsPayload = await fetchJson(newsSection.path);
+            if (newsSection.sharded) await hydrateShards(newsSection, newsPayload);
+          }
         } catch (e) { /* ignore */ }
         try {
-          if (aiSection && aiSection.available) aiPayload = await fetchJson(aiSection.path);
+          if (aiSection && aiSection.available) {
+            aiPayload = await fetchJson(aiSection.path);
+            if (aiSection.sharded) await hydrateShards(aiSection, aiPayload);
+          }
         } catch (e) { /* ignore */ }
         renderSmartAnalysis(root, { news: newsPayload, ai: aiPayload });
         state.loaded[name] = true;
@@ -487,7 +545,26 @@ def render_unified_app() -> str:
       }
       try {
         const payload = await fetchJson(section.path);
-        if (section.sharded) await hydrateShards(section, payload);
+        if (section.sharded) {
+          const total = Object.keys(payload.shard_index || {}).length;
+          root.innerHTML = `<div class="empty">正在加载数据 0/${total}...</div>`;
+          // 首屏只需最新一天（及其所在的打包分片），其余日期随用户切换再拉
+          const idx = payload.shard_index || {};
+          const wantDate = payload.latest_date || (payload.date_list || [])[0];
+          const eager = [];
+          if (payload.shard_mode === 'list') {
+            eager.push(...Object.keys(idx));
+          } else if (wantDate && idx[wantDate]) {
+            eager.push(wantDate);
+          } else {
+            // 没有 latest_date（如按股票代码分组的 news），或不含该日期的打包分片：
+            // 预取第一片保证首屏有内容，其余用户交互时按需拉取
+            eager.push(Object.keys(idx)[0]);
+          }
+          await hydrateShards(section, payload, (d, t) => {
+            root.innerHTML = `<div class="empty">正在加载数据 ${d}/${t}...</div>`;
+          }, eager);
+        }
         if (name === 'dragon_query') renderDragonQuery(root, payload);
         if (name === 'dragon_graph') renderDragonGraph(root, payload);
         if (name === 'market_hot') renderMarketHot(root, payload);
