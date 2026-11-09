@@ -413,13 +413,14 @@
     }
     // 分片模块：主文件只带索引，按索引并发拉取分片后原地合并回 payload。
     // 合并后结构与非分片版本完全一致，渲染层无需感知分片。
-    async function hydrateShards(section, payload) {
+    async function hydrateShards(section, payload, onProgress) {
       const shardIndex = payload.shard_index || {};
       const field = payload.shard_field || 'graphs';
       const keys = Object.keys(shardIndex);
       if (!keys.length) return payload;
       const merged = {};
       const CONCURRENCY = 8;
+      let done = 0;
       for (let i = 0; i < keys.length; i += CONCURRENCY) {
         const batch = keys.slice(i, i + CONCURRENCY);
         const results = await Promise.all(
@@ -432,8 +433,18 @@
           })
         );
         results.forEach(([k, v]) => {
-          if (v !== null) merged[k] = v;
+          if (v === null) return;
+          // 分片可能是「多日期打包的字典」，也可能是「单日期对象」。
+          // 打包分片的特征是：它是字典，且 key 与主索引里的 key 对得上。
+          if (v && typeof v === 'object' && !Array.isArray(v)) {
+            const vk = Object.keys(v);
+            const packed = vk.length > 0 && vk.some(x => x in shardIndex);
+            if (packed) { Object.assign(merged, v); return; }
+          }
+          merged[k] = v;
         });
+        done += batch.length;
+        if (onProgress) onProgress(done, keys.length);
       }
       payload[field] = merged;
       return payload;
@@ -486,7 +497,13 @@
       }
       try {
         const payload = await fetchJson(section.path);
-        if (section.sharded) await hydrateShards(section, payload);
+        if (section.sharded) {
+          const total = Object.keys(payload.shard_index || {}).length;
+          root.innerHTML = `<div class="empty">正在加载数据分片 0/${total}...</div>`;
+          await hydrateShards(section, payload, (d, t) => {
+            root.innerHTML = `<div class="empty">正在加载数据分片 ${d}/${t}...</div>`;
+          });
+        }
         if (name === 'dragon_query') renderDragonQuery(root, payload);
         if (name === 'dragon_graph') renderDragonGraph(root, payload);
         if (name === 'market_hot') renderMarketHot(root, payload);
