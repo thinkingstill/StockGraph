@@ -335,7 +335,8 @@ jobs:
     steps:
       - name: Deploy to GitHub Pages
         id: deployment
-        # deploy-pages 的 Pages 同步阶段有约 10 分钟硬上限，产物过大
-        # （当前 outputs 约 344MB）会卡在 syncing_files 超时失败，重试通常可成功；
-        # 若持续失败需削减 outputs 下的历史产物（html/market/dragon_tiger 约 71MB）。
+        # deploy-pages 的 Pages 同步阶段有约 10 分钟硬上限。当前 outputs 约 344MB，
+        # 其中 app/data 约 275MB、历史产物 html/market/dragon_tiger 约 71MB。
+        # 实测该步骤会间歇性卡在 syncing_files 超时（构建本身始终成功），
+        # 重跑或重新触发通常可过；若持续失败，优先清理 outputs 下的历史产物。
         uses: actions/deploy-pages@v5
