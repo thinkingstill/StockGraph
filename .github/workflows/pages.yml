@@ -253,11 +253,37 @@ jobs:
         if: steps.sync.outputs.should_deploy == 'true'
         run: python scripts/check_artifact_consistency.py
 
+      # Pages artifact 只放"首屏必需"的内容：主索引 + 前端产物 + 外部依赖。
+      #
+      # outputs/app/data/shards 约 269MB / 71 片，是最大头，但它全部是前端
+      # 按需拉取的分片，且前端 shardUrls() 已经是 jsDelivr CDN 优先、同源兜底。
+      # Pages 的 artifact 同步阶段有硬时限，275MB 会间歇性卡在 syncing_files
+      # 直到超时（构建本身始终成功）。排除分片后 artifact 降到约 7MB，同步稳定。
+      #
+      # 代价：极少数情况下 CDN 与 Pages 同时不可用时分片取不到。这是可接受的
+      # 降级——分片取不到时对应模块显示空态，其余模块不受影响。
+      - name: Stage slim Pages artifact
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf /tmp/pages_out
+          mkdir -p /tmp/pages_out
+          cp -a outputs/. /tmp/pages_out/
+          if [[ -d /tmp/pages_out/app/data/shards ]]; then
+            BEFORE=$(du -sm /tmp/pages_out | cut -f1)
+            rm -rf /tmp/pages_out/app/data/shards
+            AFTER=$(du -sm /tmp/pages_out | cut -f1)
+            echo "[pages] artifact 剔除分片：${BEFORE}MB -> ${AFTER}MB"
+          else
+            echo "[pages] 未发现分片目录，按原样打包"
+          fi
+          du -sm /tmp/pages_out
+
       - name: Upload Pages artifact
         if: steps.sync.outputs.should_deploy == 'true'
         uses: actions/upload-pages-artifact@v4
         with:
-          path: outputs
+          path: /tmp/pages_out
 
   deploy:
     if: github.event_name != 'push' && needs.build-pages.outputs.should_deploy == 'true'
@@ -316,10 +342,36 @@ jobs:
       - name: Check artifact consistency
         run: python scripts/check_artifact_consistency.py
 
+      # Pages artifact 只放"首屏必需"的内容：主索引 + 前端产物 + 外部依赖。
+      #
+      # outputs/app/data/shards 约 269MB / 71 片，是最大头，但它全部是前端
+      # 按需拉取的分片，且前端 shardUrls() 已经是 jsDelivr CDN 优先、同源兜底。
+      # Pages 的 artifact 同步阶段有硬时限，275MB 会间歇性卡在 syncing_files
+      # 直到超时（构建本身始终成功）。排除分片后 artifact 降到约 7MB，同步稳定。
+      #
+      # 代价：极少数情况下 CDN 与 Pages 同时不可用时分片取不到。这是可接受的
+      # 降级——分片取不到时对应模块显示空态，其余模块不受影响。
+      - name: Stage slim Pages artifact
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf /tmp/pages_out
+          mkdir -p /tmp/pages_out
+          cp -a outputs/. /tmp/pages_out/
+          if [[ -d /tmp/pages_out/app/data/shards ]]; then
+            BEFORE=$(du -sm /tmp/pages_out | cut -f1)
+            rm -rf /tmp/pages_out/app/data/shards
+            AFTER=$(du -sm /tmp/pages_out | cut -f1)
+            echo "[pages] artifact 剔除分片：${BEFORE}MB -> ${AFTER}MB"
+          else
+            echo "[pages] 未发现分片目录，按原样打包"
+          fi
+          du -sm /tmp/pages_out
+
       - name: Upload Pages artifact
         uses: actions/upload-pages-artifact@v4
         with:
-          path: outputs
+          path: /tmp/pages_out
 
   deploy-push-pages:
     if: github.event_name == 'push'
@@ -335,8 +387,7 @@ jobs:
     steps:
       - name: Deploy to GitHub Pages
         id: deployment
-        # deploy-pages 的 Pages 同步阶段有约 10 分钟硬上限。当前 outputs 约 344MB，
-        # 其中 app/data 约 275MB、历史产物 html/market/dragon_tiger 约 71MB。
-        # 实测该步骤会间歇性卡在 syncing_files 超时（构建本身始终成功），
-        # 重跑或重新触发通常可过；若持续失败，优先清理 outputs 下的历史产物。
+        # deploy-pages 的 Pages 同步阶段有约 10 分钟硬上限。分片目录约 269MB，
+        # 是同步超时的元凶；现已在打包阶段剔除（见 Stage slim 步骤），
+        # artifact 从约 275MB 降到约 7MB，同步应可稳定完成。
         uses: actions/deploy-pages@v5

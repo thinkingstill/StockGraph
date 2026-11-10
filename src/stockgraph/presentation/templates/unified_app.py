@@ -704,22 +704,50 @@ def render_unified_app() -> str:
       // rel 形如 ./data/shards/<module>/<file>.json
       const clean = String(rel || '').replace(/^\.\//, '');
       const list = [];
-      if (clean) list.push(SHARD_CDN_BASE + clean);
+      // CDN 连续失败后本次会话内不再优先尝试，避免每片都白等一次超时
+      if (clean && !shardCdnSkipped) list.push(SHARD_CDN_BASE + clean);
       list.push(rel);           // 同源兜底
       return list;
     }
+    // CDN 熔断：连续 N 片失败即认为当前网络到 CDN 不通，本次会话剩余分片直接走同源。
+    // 只降级不永久关闭，刷新页面会重新尝试。
+    let shardCdnFailStreak = 0;
+    let shardCdnSkipped = false;
+    const SHARD_CDN_FAIL_LIMIT = 3;
+    function noteShardSource(success, usedCdn) {
+      if (!usedCdn) return;
+      if (success) {
+        shardCdnFailStreak = 0;
+      } else if (++shardCdnFailStreak >= SHARD_CDN_FAIL_LIMIT) {
+        shardCdnSkipped = true;
+      }
+    }
     // 单分片超时：CDN 首次回源或网络抖动时可能长时间挂起，
     // 没有超时会让整批 Promise.all 卡死，页面停在"正在加载"。
-    const SHARD_TIMEOUT_MS = 10000;
-    async function fetchWithTimeout(url, ms) {
+    //
+    // 实测单个 4MB 分片经慢链路下载要 30s 以上，原来一刀切 10s 会把本来能成功的
+    // 请求掐断。改为两段判定：首字节超过 FIRST 视为该源不可用，立刻切下一个源；
+    // 一旦开始有响应，就把总时长上限放宽到 TOTAL，给慢链路下完的机会。
+    const SHARD_FIRST_BYTE_MS = 15000;
+    const SHARD_TOTAL_MS = 120000;
+    async function fetchWithTimeout(url, firstByteMs, totalMs) {
       const ctrl = new AbortController();
-      const timer = setTimeout(() => ctrl.abort(), ms);
+      const first = firstByteMs || SHARD_FIRST_BYTE_MS;
+      const total = totalMs || SHARD_TOTAL_MS;
+      let gotResponse = false;
+      const firstTimer = setTimeout(() => {
+        if (!gotResponse) ctrl.abort();
+      }, first);
+      const totalTimer = setTimeout(() => ctrl.abort(), total);
       try {
         const res = await fetch(url, { signal: ctrl.signal });
+        gotResponse = true;
+        clearTimeout(firstTimer);
         if (!res.ok) throw new Error('HTTP ' + res.status);
         return await res.json();
       } finally {
-        clearTimeout(timer);
+        clearTimeout(firstTimer);
+        clearTimeout(totalTimer);
       }
     }
     async function fetchShardWithFallback(rel, attempts) {
@@ -728,9 +756,15 @@ def render_unified_app() -> str:
       let lastErr = null;
       for (let n = 0; n < tries; n++) {
         for (const u of urls) {
+          const isCdn = u !== rel;
           try {
-            return await fetchWithTimeout(u, SHARD_TIMEOUT_MS);
-          } catch (e) { lastErr = e; }
+            const data = await fetchWithTimeout(u);
+            noteShardSource(true, isCdn);
+            return data;
+          } catch (e) {
+            noteShardSource(false, isCdn);
+            lastErr = e;
+          }
         }
       }
       throw lastErr || new Error('分片加载失败');
@@ -2266,6 +2300,12 @@ def render_unified_app() -> str:
         </div>`;
       const topChart = echarts.init(document.getElementById('mi-top'));
       const bottomChart = echarts.init(document.getElementById('mi-bottom'));
+      // 行业名最长 4 个汉字（部分带「*ST」前缀会更长），按字数估算 y 轴宽度，
+      // 避免文字压到柱子上。中文按 13px 计，其余按 7px 计。
+      function industryAxisWidth(rows) {
+        const longest = rows.reduce((m, x) => Math.max(m, String(x.industry || '').length), 0);
+        return Math.min(Math.max(longest * 13 + 16, 56), 130);
+      }
       function aggregateIndustryRange(range) {
         // 注意：后端 total_change_pct 是「当日该行业所有成分股涨跌幅之和」，
         // 直接拿来排序/画图会得到一个几百上千的伪数值（100 只股票各涨 1% 就是 100）。
@@ -2300,12 +2340,30 @@ def render_unified_app() -> str:
         document.getElementById('mi-count-v').textContent = records.length;
         document.getElementById('mi-table').innerHTML = records.map(x => `<tr><td>${escapeHtml(x.industry)}</td><td class="num">${x.stock_count}</td><td class="num ${Number(x.avg_change_pct) >= 0 ? 'buy' : 'sell'}">${Number(x.avg_change_pct).toFixed(2)}%</td><td class="num ${Number(x.changepct) >= 0 ? 'buy' : 'sell'}">${Number(x.changepct).toFixed(2)}%</td></tr>`).join('');
         topChart.setOption({
-          xAxis: { type: 'value', name: multiDay ? '区间累计涨跌幅(%)' : '平均涨跌幅(%)' }, yAxis: { type: 'category', data: top.map(x => x.industry) },
-          series: [{ type: 'bar', data: top.map(x => Number(x.changepct.toFixed(4))), itemStyle: { color: '#0f766e' } }]
+          // 左边距按最长行业名的字数自适应：默认 60px 会把「光伏设备」「交运设备」
+          // 这类四字行业名挤到柱子底下，出现文字与柱子重叠。
+          grid: { left: industryAxisWidth(top), right: 56, top: 34, bottom: 24 },
+          tooltip: { trigger: 'axis', axisPointer: { type: 'shadow' }, valueFormatter: v => Number(v).toFixed(2) + '%' },
+          xAxis: { type: 'value', name: multiDay ? '区间累计涨跌幅(%)' : '平均涨跌幅(%)', nameLocation: 'middle', nameGap: 26, axisLabel: { formatter: '{value}%' } },
+          yAxis: { type: 'category', data: top.map(x => x.industry), axisLabel: { fontSize: 12 } },
+          series: [{
+            type: 'bar',
+            data: top.map(x => Number(x.changepct.toFixed(4))),
+            itemStyle: { color: '#0f766e', borderRadius: [0, 4, 4, 0] },
+            label: { show: true, position: 'right', formatter: p => Number(p.value).toFixed(2) + '%', fontSize: 11, color: 'var(--muted)' },
+          }]
         }, true);
         bottomChart.setOption({
-          xAxis: { type: 'value', name: multiDay ? '区间累计涨跌幅(%)' : '平均涨跌幅(%)' }, yAxis: { type: 'category', data: bottom.map(x => x.industry) },
-          series: [{ type: 'bar', data: bottom.map(x => Number(x.changepct.toFixed(4))), itemStyle: { color: '#b45309' } }]
+          grid: { left: industryAxisWidth(bottom), right: 56, top: 34, bottom: 24 },
+          tooltip: { trigger: 'axis', axisPointer: { type: 'shadow' }, valueFormatter: v => Number(v).toFixed(2) + '%' },
+          xAxis: { type: 'value', name: multiDay ? '区间累计涨跌幅(%)' : '平均涨跌幅(%)', nameLocation: 'middle', nameGap: 26, axisLabel: { formatter: '{value}%' } },
+          yAxis: { type: 'category', data: bottom.map(x => x.industry), axisLabel: { fontSize: 12 } },
+          series: [{
+            type: 'bar',
+            data: bottom.map(x => Number(x.changepct.toFixed(4))),
+            itemStyle: { color: '#b45309', borderRadius: [0, 4, 4, 0] },
+            label: { show: true, position: 'right', formatter: p => Number(p.value).toFixed(2) + '%', fontSize: 11, color: 'var(--muted)' },
+          }]
         }, true);
       }
       ['mi-start','mi-end'].forEach(id => document.getElementById(id).addEventListener('change', draw));
